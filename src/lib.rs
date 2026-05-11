@@ -1,6 +1,7 @@
 #![allow(warnings)]
 
 pub use paste;
+pub use rustime_macro::*;
 
 use std::sync::{Mutex, OnceLock};
 use std::collections::HashSet;
