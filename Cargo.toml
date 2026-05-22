@@ -1,8 +1,8 @@
 [package]
-name = "rustime"
+name = "fcomptime"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 paste = "*"
-rustime_macro = { path = "./rustime_macro" }
+fcomptime_macro = { path = "./fcomptime_macro" }

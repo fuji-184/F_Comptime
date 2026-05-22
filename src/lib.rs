@@ -1,7 +1,7 @@
 #![allow(warnings)]
 
 pub use paste;
-pub use rustime_macro::*;
+pub use fcomptime_macro::*;
 
 use std::sync::{Mutex, OnceLock};
 use std::collections::HashSet;
@@ -115,19 +115,19 @@ impl From<&str> for TraceError {
 }
 
 #[macro_export]
-macro_rules! init_rustime {
+macro_rules! init_comptime {
     () => {
         #[cfg(test)]
-        pub(crate) static RUSTIME_NAMES: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = 
+        pub(crate) static comptime_NAMES: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = 
             std::sync::OnceLock::new();
     };
 }
 
 #[macro_export]
-macro_rules! rustime_output {
+macro_rules! comptime_output {
     (str, $output:expr, $name:expr) => {{
         if cfg!(test) {
-            $crate::process_rustime(&crate::RUSTIME_NAMES, $output, $name, true);
+            $crate::process_comptime(&crate::comptime_NAMES, $output, $name, true);
         } else {
             
         }
@@ -135,7 +135,7 @@ macro_rules! rustime_output {
     
     (raw, $output:expr, $name:expr) => {{
         if cfg!(test) {
-            $crate::process_rustime(&crate::RUSTIME_NAMES, $output, $name, false);
+            $crate::process_comptime(&crate::comptime_NAMES, $output, $name, false);
         } else {
             
         }
@@ -143,7 +143,7 @@ macro_rules! rustime_output {
 }
 
 #[track_caller]
-pub fn process_rustime<T: std::fmt::Display>(
+pub fn process_comptime<T: std::fmt::Display>(
     mutex_lock: &std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>>,
     output: T, 
     name: &str, 
@@ -162,8 +162,8 @@ pub fn process_rustime<T: std::fmt::Display>(
         panic!("ERROR: Name '{}' is already exists! -> {}:{}:{}\n", name, loc.file(), loc.line(), loc.column());
     }
 
-    std::fs::create_dir_all("./rustime").unwrap();
-    let path = format!("./rustime/{}", name);
+    std::fs::create_dir_all("./comptime").unwrap();
+    let path = format!("./comptime/{}", name);
 
     if is_str {
         if let Err(err) = std::fs::write(path, format!("\"{}\"", output)) {
@@ -179,32 +179,32 @@ pub fn process_rustime<T: std::fmt::Display>(
 }
 
 #[macro_export]
-macro_rules! rustime {
+macro_rules! comptime {
     (full, $name:literal) => {
         #[cfg(test)]
         $crate::handle_default!();
 
         #[cfg(not(test))]
-        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/rustime/", $name));
+        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name));
     };
     (full, $name:literal, $($default:tt)*) => {
         #[cfg(test)]
         $crate::handle_default!($($default)*);
 
         #[cfg(not(test))]
-        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/rustime/", $name));
+        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name));
     };
     ($name:literal) => {
         if cfg!(test) {
             //$crate::handle_default!($($default)*)
             Default::default()
         } else {
-            include!(concat!(env!("CARGO_MANIFEST_DIR"), "/rustime/", $name))
+            include!(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name))
         }
     };
     ($($t:tt)*) => {
-        #[cfg(all(test, feature = "rustime"))]
-        mod rustime_setup {
+        #[cfg(all(test, feature = "comptime"))]
+        mod comptime_setup {
             #[allow(unused_imports)]
             use super::*;
             $crate::parse!($($t)*);
@@ -222,7 +222,7 @@ macro_rules! handle_default {
 #[macro_export]
 macro_rules! assign {
     ($name:literal) => {
-      include!(concat!(env!("CARGO_MANIFEST_DIR"), "/rustime/", $name));
+      include!(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name));
     };
 }
 
@@ -244,7 +244,7 @@ macro_rules! parse {
 }
 
 #[macro_export]
-macro_rules! rustime_scope {
+macro_rules! comptime_scope {
     ($($t:tt)*) => {
         #[cfg(not(test))]
         {
