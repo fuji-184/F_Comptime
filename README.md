@@ -1,6 +1,6 @@
-# comptime
+# F_Comptime
 
-FComptime is a Rust **compile time code evaluation and generation** library. It runs Rust code at test time, evaluating expressions, generating values or syntaxs, and producing files. Then includes those results at compile time in debug/release builds.
+F_Comptime is a Rust **compile time code evaluation and generation** library. It runs Rust code at test time, evaluating expressions, generating values or syntaxs, and producing files. Then includes those results at compile time in debug/release builds
 
 ---
 
@@ -20,8 +20,9 @@ The key idea: anything that would be expensive or complex to compute at runtime 
 `Cargo.toml`:
 ```toml
 [dependencies]
-fcomptime = { path = "..." }
+fcomptime = { git = "https://github.com/fuji-184/F_Comptime.git" }
 
+# important, add the feature name `comptime` so that comptime can run independently from other test code
 [features]
 comptime = []
 ```
@@ -37,7 +38,7 @@ init_comptime!();
 ## Macros
 
 ### `init_comptime!()`
-Initializes the internal mutex registry. Must be called once at crate root.
+Initializes the internal mutex registry. Must be called once at crate root
 
 ```rust
 init_comptime!();
@@ -46,7 +47,9 @@ init_comptime!();
 ---
 
 ### `comptime!(blocks)` — Define evaluators and generators
-Defines code evaluation and generation blocks. Each named block becomes a test function that runs during `cargo test --features=comptime`. It can be used to evaluate functions, generate structs, build strings, or produce any Rust expression. The output is saved to a file and included at compile time.
+Defines code evaluation and generation blocks. Each named block becomes a test function that runs during `cargo test --features=comptime`. It can be used to evaluate functions, generate structs, build strings, or produce any Rust expression. The output is saved to a file and included at compile time
+
+Example :
 
 ```rust
 comptime!(
@@ -68,14 +71,9 @@ comptime!(
 );
 ```
 
-- Items (e.g. `use`, `fn`, `struct`) are shared across all blocks
-- Named blocks `name { ... }` become `#[test]` functions
-- Only runs when `cargo test --features=comptime`
-
 ---
 
-### `comptime!("name")` — Include evaluated result
-Includes the evaluated/generated file as an expression in non test builds. Returns `Default::default()` in test builds.
+### `comptime!("name")` — Include the result. Returns `Default::default()` in test builds
 
 ```rust
 let x = comptime!("the_key_name");
@@ -83,11 +81,10 @@ let x = comptime!("the_key_name");
 
 ---
 
-### `comptime!(full, "name")` — Include generated item
-Includes the generated file as a top level item (e.g. struct, impl). Use for declarations that cannot appear inside expressions.
+### `comptime!(full, "name")` — Include the result as a top level item (eg struct, impl). Use for declarations that cannot appear inside expressions
 
 ```rust
-comptime!(full, "my_struct");
+comptime!(full, "the_key_name");
 ```
 
 Optionally accepts a default for test builds:
@@ -97,8 +94,7 @@ comptime!(full, "my_struct", struct MyStruct { x: i32 });
 
 ---
 
-### `comptime_output!(tag, value, "name")` — Write output file
-Writes an evaluated value to `./comptime/<name>`. Only runs during test.
+### `comptime_output!(tag, value, "name")` — write the result to `./comptime/<name>`. Only runs during test
 
 | Tag | Behavior |
 |-----|----------|
@@ -115,7 +111,7 @@ comptime_output!(str, value, "my_value");  // writes: "hello"
 ---
 
 ### `comptime_scope!(...)` — Release only block
-Wraps code that should only run in non test builds.
+Wraps code that should only run in non test builds
 
 ```rust
 comptime_scope!(
@@ -198,14 +194,54 @@ fn my_block() -> Res {
 
 ---
 
-## Scripts
+## Run Cargo-Comptime
 
-### `comptime.sh` — Dev runner
-Evaluates and generates files, then runs the project.
+Easier comptime compile pipeline with cargo-comptime
+
+### Install cargo-comptime
 
 ```bash
-#!/bin/bash
-cargo test --features=comptime -- --no-capture
-clear
-cargo run
+cargo install --git https://github.com/fuji-184/F_Comptime.git cargo-comptime
+```
+
+## How To Use Cargo-Comptime To Compile The Comptime
+
+### Compile comptime and run cargo check
+
+```bash
+cargo comptime check
+```
+
+### Compile comptime and run cargo run
+
+```bash
+cargo comptime run
+```
+
+### Compile comptime and run cargo build (debug build)
+
+```bash
+cargo comptime build
+```
+
+### Compile comptime and run cargo build --release
+
+```bash
+cargo comptime build --release
+```
+
+### Generate custom command config file
+
+```bash
+cargo comptime init config
+```
+
+### Compile comptime and run custom command
+
+```bash
+cargo comptime path_to_the_config
+
+# for example
+
+cargo comptime comptime.config
 ```
