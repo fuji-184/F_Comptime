@@ -291,6 +291,36 @@ cargo comptime check
 
 ---
 
+## How to share the comptime logic cross project/crate
+
+* write the code in pure function, without any comptime macro
+* then the caller is the one that turns it into comptime mode by calling it inside comptime macro
+
+```rust
+// project a
+pub fn code_like_usual(input: i32) -> i32 {
+    input * 2
+}
+
+// project b
+use a::code_like_usual;
+
+#[comptime]
+fn any_name() {
+    source! {
+        let res = code_like_usual(10);
+        output!(raw, res, "my_output");
+    }
+
+    call_scope! {
+        let res = call!("my_output");
+        println!("{}", res);
+    }
+}
+```
+
+---
+
 ## Add `/comptime/` folder to `.gitignore` to exclude it from the commit
 
 ```
