@@ -282,8 +282,14 @@ cargo comptime check
 
 ---
 
+## Known Limitation
+- Can not use comptime output inside other comptime yet (same limitation in Crabtime about this one)
+
+---
+
 ## Road Map
 
 - Add F_Comptime support in [R_Lib](https://github.com/fuji-184/RLib)
+- Figuring how to make using comptime output in other comptime possible
 
 ---
