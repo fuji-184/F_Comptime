@@ -5,4 +5,10 @@ edition = "2024"
 
 [dependencies]
 paste = "*"
-fcomptime_macro = { path = "./fcomptime_macro" }
+fcomptime_macro = { path = "./fcomptime_macro", features = [], optional = true }
+tokio = { version = "*", features = ["full"], optional = true }
+
+[features]
+default = ["fcomptime_macro"]
+nightly = ["fcomptime_macro/nightly"]
+async = ["dep:tokio"]

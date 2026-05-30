@@ -3,6 +3,9 @@
 pub use paste;
 pub use fcomptime_macro::*;
 
+#[cfg(feature = "async")]
+pub use tokio;
+
 use std::sync::{Mutex, OnceLock};
 use std::collections::HashSet;
 use std::backtrace::Backtrace;
@@ -124,22 +127,16 @@ macro_rules! init_comptime {
 }
 
 #[macro_export]
-macro_rules! comptime_output {
-    (str, $output:expr, $name:expr) => {{
-        if cfg!(test) {
-            $crate::process_comptime(&crate::comptime_NAMES, $output, $name, true);
-        } else {
-            
-        }
-    }};
+macro_rules! output {
+    (str, $output:expr, $name:expr) => {
+        #[cfg(test)]
+        $crate::process_comptime(&crate::comptime_NAMES, $output, $name, true);
+    };
     
-    (raw, $output:expr, $name:expr) => {{
-        if cfg!(test) {
-            $crate::process_comptime(&crate::comptime_NAMES, $output, $name, false);
-        } else {
-            
-        }
-    }};
+    (raw, $output:expr, $name:expr) => {
+        #[cfg(test)]
+        $crate::process_comptime(&crate::comptime_NAMES, $output, $name, false);
+    };
 }
 
 #[track_caller]
@@ -179,13 +176,24 @@ pub fn process_comptime<T: std::fmt::Display>(
 }
 
 #[macro_export]
-macro_rules! comptime {
+macro_rules! call {
     (full, $name:literal) => {
         #[cfg(test)]
         $crate::handle_default!();
 
         #[cfg(not(test))]
         include!(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name));
+    };
+    (token, $name:literal) => {
+        #[cfg(test)]
+        $crate::handle_default!();
+
+        #[cfg(not(test))]
+        comptime_token!($name);
+    };
+    (partial, $name:literal, $($item:tt)*) => {
+        #[cfg(not(test))]
+        $crate::comptime_type!($name, $($item)*);
     };
     (full, $name:literal, $($default:tt)*) => {
         #[cfg(test)]
@@ -195,13 +203,12 @@ macro_rules! comptime {
         include!(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name));
     };
     ($name:literal) => {
-        if cfg!(test) {
-            //$crate::handle_default!($($default)*)
-            Default::default()
-        } else {
-            include!(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name))
-        }
+        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name))
     };
+}
+
+#[macro_export]
+macro_rules! comptime_source {
     ($($t:tt)*) => {
         #[cfg(all(test, feature = "comptime"))]
         mod comptime_setup {
@@ -244,11 +251,32 @@ macro_rules! parse {
 }
 
 #[macro_export]
-macro_rules! comptime_scope {
+macro_rules! call_scope {
     ($($t:tt)*) => {
         #[cfg(not(test))]
         {
             $($t)*
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! source {
+    ($($t:tt)*) => {
+        #[cfg(test)]
+        {
+            $($t)*
+        }
+    };
+}
+
+#[cfg(all(feature = "async"))]
+#[macro_export]
+macro_rules! async_source {
+    ($($t:tt)*) => {
+        #[cfg(test)]
+        {
+           let _ = async { $($t)* };
         }
     };
 }

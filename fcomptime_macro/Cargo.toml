@@ -10,3 +10,10 @@ proc-macro = true
 quote = "1.0.45"
 syn = { version = "2.0.117", features = ["full"] }
 proc-macro2 = "*"
+streaming-iterator = "0.1.9"
+tree-sitter = "0.26.9"
+tree-sitter-rust = "0.24.2"
+
+[features]
+default = []
+nightly = []
