@@ -85,7 +85,9 @@ fn function() {
 
 ### `async_source! { ... }`
 
-Async version of `source! { ... }`. Can call async code 
+Async version of `source! { ... }`. Can call async code
+
+Setup: Enables the feature `async`
 
 ```rust
 #[comptime]
