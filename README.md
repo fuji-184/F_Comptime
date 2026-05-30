@@ -27,7 +27,7 @@ While library like Crabtime solve a similar problem, F_Comptime solves the limit
 | Feature | F_Comptime | Crabtime |
 | --- | --- | --- |
 | **Accessibility** | **Can use any other code in the project.** Using Rust test, it can access other functions, structs, type, even code from different files as long as it is imported in the current file, just like normal Rust coding. It has the same capability of a test function | **Can't use code outside the macro** Using new separated project, it has the same limitation of proc macro in the aspect of running as separated project |
-| **Partial Embed** | **Can embed token partially** Using macro to embed multiple raw tokens to code partially. | **Can't embed partially** -. |
+| **Partial Embed** | **Can embed token partially** Using macro to embed multiple raw tokens to code partially. | **Can't embed partially**. |
 | **Async Support** | **Can use async code** Using tokio test to run async-await. | **Need additional setup** Need to setup async dependency and async runtime creation for every Crabtime macro scope. |
 | **Dependency** | **Shared dependencies with the main crate** Reuse the same compilation cache of the main crate dependencies. | **Copy dependencies to new separated project** Duplicating compilation artifacts that consumes SSD space. |
 
@@ -114,7 +114,10 @@ The scope of the output and any code that uses the output. Used to toggle betwee
 
 ---
 
-### `call!("name")`,  `call!(full, "name")`,  `call!(full, "name", default)`, `call!(partial, "name", code)`
+### `call!("name")`
+### `call!(full, "name")`
+### `call!(full, "name", default)`
+### `call!(partial, "name", code)`
 
 Embed the output in the current line.
 
