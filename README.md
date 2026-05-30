@@ -83,6 +83,21 @@ fn function() {
 
 ---
 
+### `async_source! { ... }`
+
+Async version of `source! { ... }`. Can call async code 
+
+```rust
+#[comptime]
+fn function() {
+    async_source {
+        // the async code
+    }
+}
+```
+
+---
+
 ### `output! { ... }`
 
 To set the output of the evaluation.
