@@ -91,9 +91,70 @@ fn comptime_files_exist() -> bool {
 }
 
 fn run_cargo_test() {
-    if !run_filtered(&["test", "--features=comptime", "--profile=dev", "--", "--no-capture"]) {
+    let output = Command::new("cargo")
+        .args(&["test", "--features=comptime", "--no-run", "--message-format=json", "--profile=dev", "--", "--no-capture"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .expect("Failed to compile tests");
+
+    if !output.status.success() {
+        let _ = Command::new("cargo")
+            .args(&["test", "--features=comptime", "--no-run", "--profile=dev", "--", "--no-capture"])
+            .status();
         exit(1);
     }
+
+    let mut test_binary = None;
+    let reader = BufReader::new(&output.stdout[..]);
+    for line_res in reader.lines() {
+        if let Ok(line) = line_res {
+            if line.starts_with('{') {
+                if let Some(start_idx) = line.find("\"executable\":\"") {
+                    let rem = &line[start_idx + 14..];
+                    if let Some(end_idx) = rem.find('"') {
+                        let path_str = &rem[..end_idx];
+                        if !path_str.is_empty() {
+                            test_binary = Some(path_str.replace("\\\\", "\\"));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let Some(bin_path) = test_binary else {
+        let _ = Command::new("cargo")
+            .args(&["test", "--features=comptime", "--no-run"])
+            .status();
+        exit(1);
+    };
+
+    loop {
+        let run_output = Command::new(&bin_path)
+            .output()
+            .expect("Failed to execute test binary");
+
+        if run_output.status.success() {
+            break;
+        }
+
+        let stderr_str = String::from_utf8_lossy(&run_output.stderr);
+        let stdout_str = String::from_utf8_lossy(&run_output.stdout);
+        
+        if stdout_str.contains("comptime error: output not found yet") 
+            || stderr_str.contains("comptime error: output not found yet")
+            || stdout_str.contains("ParseIntError")
+            || stderr_str.contains("ParseIntError")
+        {
+            continue;
+        }
+
+        eprint!("{}", stdout_str);
+        eprint!("{}", stderr_str);
+        exit(1);
+    }
+
     save_test_timestamp();
 }
 
@@ -101,7 +162,7 @@ fn run_custom_commands(file_path: &str) {
     let path = Path::new(file_path);
     if !path.exists() {
         eprintln!("Error: Configuration file '{}' not found.", file_path);
-        eprintln!();
+        eprint!("\n");
         print_usage();
         exit(1);
     }
@@ -178,7 +239,7 @@ fn main() {
             handle_init_config();
         } else {
             eprintln!("Unknown sub-command for 'init'. Did you mean 'cargo comptime init config'?");
-            eprintln!();
+            eprint!("\n");
             print_usage();
             exit(1);
         }
@@ -192,7 +253,7 @@ fn main() {
         _ => {
             if arg1.starts_with('-') {
                 eprintln!("Unknown option: {}", arg1);
-                eprintln!();
+                eprint!("\n");
                 print_usage();
                 exit(1);
             }

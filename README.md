@@ -135,6 +135,7 @@ The scope of the output and any code that uses the output. Used to toggle betwee
 ### `call!(full, "name")`
 ### `call!(full, "name", default)`
 ### `call!(partial, "name", code)`
+### `call!(str in, "name", any_name { // use any_name })`
 
 Embed the output in the current line.
 
@@ -142,6 +143,7 @@ Embed the output in the current line.
 - `call!(full, "name")` — embed as non expression (top level declaration).
 - `call!(full, "name", default_expr)` — embed as non expression (top level declaration) with fallback item.
 - `call!(partial, "name", code)` — embed partial token.
+- `call!(str in, "name", any_name { // use any_name })` — call the result of other comptime inside other comptime (currently only support str/string, if want to make it to number use the build in method `.parse::<type>()`. can't embed raw token/syntax)
 
 ```rust
 let result = call!("result");
@@ -155,6 +157,11 @@ call!(partial, "result",
       result: #2
     }
 );
+
+call!(str in, "name", any_name {
+    // parse to number type if need to be number
+    let int = any_name.parse::<i32>.unwrap();
+});
 ```
 
 ---
@@ -330,7 +337,7 @@ fn any_name() {
 ---
 
 ## Known Limitation
-- Can not use comptime output inside other comptime yet (same limitation in Crabtime about this one)
+- Can not use comptime output inside other comptime as raw token/syntax yet (same limitation in Crabtime about this one)
 
 ---
 

@@ -177,6 +177,25 @@ pub fn process_comptime<T: std::fmt::Display>(
 
 #[macro_export]
 macro_rules! call {
+    (str in, $name:literal, $val:ident $body:block) => {
+        {
+            if let Ok(content) = std::fs::read_to_string(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/comptime/",
+                $name
+            )) {
+                let trimmed = content.trim();
+                if !trimmed.is_empty() {
+                    let $val = trimmed.to_string();
+                    $body
+                } else {
+                    std::eprintln!("comptime error: output not found yet");
+                }
+            } else {
+                std::eprintln!("comptime error: output not found yet");
+            }
+        }
+    };
     (full, $name:literal) => {
         #[cfg(test)]
         $crate::handle_default!();
