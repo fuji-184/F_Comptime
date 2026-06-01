@@ -394,7 +394,7 @@ Walkthrough to initialize and run the project
 
 ```toml
 [dependencies]
-fcomptime = "0.1"
+fcomptime = { git = "https://github.com/fuji-184/F_Comptime.git" }
 
 [features]
 # important to toggle comptime mode and normal mode
