@@ -404,14 +404,7 @@ comptime = []
 ### Call `init_comptime!()` 1 time in the crate root
 
 ```rust
-use fcomptime::{
-    comptime,
-    source,
-    output,
-    call_scope,
-    call,
-    comptime_source
-};
+use fcomptime::prelude::*;
 
 init_comptime!();
 
