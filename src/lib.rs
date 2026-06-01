@@ -6,6 +6,8 @@ pub use fcomptime_macro::*;
 #[cfg(feature = "async")]
 pub use tokio;
 
+pub mod prelude;
+
 use std::sync::{Mutex, OnceLock};
 use std::collections::HashSet;
 use std::backtrace::Backtrace;
