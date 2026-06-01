@@ -196,7 +196,7 @@ comptime_source! {
 
 ## How to use the comptime in Impl and Trait
 
-Just place the `#[comptime]` above the declaration, then write the comptime macro normally
+Places the `#[comptime]` above the declaration, then writing the comptime macro normally
 
 ```rust
 struct Data;
