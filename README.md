@@ -292,7 +292,7 @@ The feature `comptime` makes sure the comptime code and pure test code can run b
 Install once:
 
 ```bash
-cargo install --path ./cargo-comptime
+cargo install --git https://github.com/fuji-184/F_Comptime cargo-comptime
 ```
 
 Then use:
