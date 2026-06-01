@@ -424,6 +424,8 @@ cargo test --features=comptime
 cargo run
 ```
 
+If calling comptime output in other comptime by calling the output not shared logic, using manual run is complex. Uses `Cargo-Comptime` instead that automates nested raw compilation
+
 ### Auto Run With Cargo-Comptime
 
 ```bash
