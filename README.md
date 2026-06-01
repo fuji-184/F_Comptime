@@ -346,7 +346,7 @@ fn a<T>(b: T) {
 #[info]
 fn b() {
   // b calls a
-  a::<i32>();
+  a::<i32>(val);
 }
 ```
 
@@ -365,7 +365,7 @@ fn a<T>(b: T) {
 #[info]
 fn b() {
   // b calls a
-  a::<i32>();
+  a::<i32>(val);
 }
 
 #[comptime]
