@@ -147,7 +147,151 @@ fn run_cargo_test() {
             || stdout_str.contains("ParseIntError")
             || stderr_str.contains("ParseIntError")
         {
+            std::thread::sleep(std::time::Duration::from_millis(1));
             continue;
+        }
+
+        eprint!("{}", stdout_str);
+        eprint!("{}", stderr_str);
+        exit(1);
+    }
+
+    save_test_timestamp();
+}
+
+fn run_cargo_test_nested_raw() {
+    let output = Command::new("cargo")
+        .args(&["test", "--features=comptime", "--no-run", "--message-format=json", "--profile=dev", "--", "--no-capture"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .expect("Failed to compile tests");
+        
+
+    if !output.status.success() {
+        let _ = Command::new("cargo")
+            .args(&["test", "--features=comptime", "--no-run", "--profile=dev", "--", "--no-capture"])
+            .status();
+        exit(1);
+    }
+
+    let mut test_binary = None;
+    let reader = BufReader::new(&output.stdout[..]);
+    for line_res in reader.lines() {
+        if let Ok(line) = line_res {
+            if line.starts_with('{') {
+                if let Some(start_idx) = line.find("\"executable\":\"") {
+                    let rem = &line[start_idx + 14..];
+                    if let Some(end_idx) = rem.find('"') {
+                        let path_str = &rem[..end_idx];
+                        if !path_str.is_empty() {
+                            test_binary = Some(path_str.replace("\\\\", "\\"));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let Some(bin_path) = test_binary else {
+        let _ = Command::new("cargo")
+            .args(&["test", "--features=comptime", "--no-run"])
+            .status();
+        exit(1);
+    };
+
+    loop {
+        let run_output = Command::new(&bin_path)
+            .output()
+            .expect("Failed to execute test binary");
+
+       /* if run_output.status.success() {
+            break;
+        }*/
+
+        let stderr_str = String::from_utf8_lossy(&run_output.stderr);
+        let stdout_str = String::from_utf8_lossy(&run_output.stdout);
+
+        if stdout_str.contains("comptime error: raw output not found yet") 
+            || stderr_str.contains("comptime error: raw output not found yet")
+        {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            continue;
+        } else {
+          break;
+        }
+
+        eprint!("{}", stdout_str);
+        eprint!("{}", stderr_str);
+        exit(1);
+    }
+    
+    let output = Command::new("cargo")
+        .env("RUSTFLAGS", "--cfg comptime_ready")
+        .args(&["test", "--features=comptime", "--no-run", "--message-format=json", "--profile=dev", "--", "--no-capture"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .expect("Failed to compile tests");
+        
+
+    if !output.status.success() {
+        let _ = Command::new("cargo")
+            .env("RUSTFLAGS", "--cfg comptime_ready")
+            .args(&["test", "--features=comptime", "--no-run", "--profile=dev", "--", "--no-capture"])
+            .status();
+        exit(1);
+    }
+
+    let mut test_binary = None;
+    let reader = BufReader::new(&output.stdout[..]);
+    for line_res in reader.lines() {
+        if let Ok(line) = line_res {
+            if line.starts_with('{') {
+                if let Some(start_idx) = line.find("\"executable\":\"") {
+                    let rem = &line[start_idx + 14..];
+                    if let Some(end_idx) = rem.find('"') {
+                        let path_str = &rem[..end_idx];
+                        if !path_str.is_empty() {
+                            test_binary = Some(path_str.replace("\\\\", "\\"));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let Some(bin_path) = test_binary else {
+        let _ = Command::new("cargo")
+            .env("RUSTFLAGS", "--cfg comptime_ready")
+            .args(&["test", "--features=comptime", "--no-run"])
+            .status();
+        exit(1);
+    };
+
+    loop {
+        let run_output = Command::new(&bin_path)
+            .output()
+            .expect("Failed to execute test binary");
+
+       /* if run_output.status.success() {
+            break;
+        }*/
+
+        let stderr_str = String::from_utf8_lossy(&run_output.stderr);
+        let stdout_str = String::from_utf8_lossy(&run_output.stdout);
+        
+        if stdout_str.contains("comptime error: output not found yet") 
+            || stderr_str.contains("comptime error: output not found yet")
+            || stdout_str.contains("comptime error: raw output not found yet") 
+            || stderr_str.contains("comptime error: raw output not found yet")
+            || stdout_str.contains("ParseIntError")
+            || stderr_str.contains("ParseIntError")
+        {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            continue;
+        } else {
+          break;
         }
 
         eprint!("{}", stdout_str);
@@ -194,7 +338,26 @@ fn handle_standard_action(action: &str, remaining_args: &[&str]) {
     if needs_retest() {
         run_cargo_test();
     }
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+
     let status = Command::new("cargo")
+        .env("COMPTIME_NONCE", now.to_string())
+        .arg(action)
+        .args(remaining_args)
+        .status();
+    match status {
+        Ok(s) => exit(s.code().unwrap_or(1)),
+        Err(_) => exit(1),
+    }
+}
+
+fn handle_standard_action_nested_raw(action: &str, remaining_args: &[&str]) {
+    if needs_retest() {
+        run_cargo_test_nested_raw();
+    }
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+    let status = Command::new("cargo")
+        .env("COMPTIME_NONCE", now.to_string())
         .arg(action)
         .args(remaining_args)
         .status();
@@ -246,6 +409,10 @@ fn main() {
         return;
     }
     match arg1 {
+        "check" | "run" | "build" if args.len() >= 5 && args[3] == "nested" && args[4] == "raw" => {
+            let remaining_args: Vec<&str> = args.iter().skip(5).map(|s| s.as_str()).collect();
+            handle_standard_action_nested_raw(arg1, &remaining_args);
+        }
         "check" | "run" | "build" => {
             let remaining_args: Vec<&str> = args.iter().skip(3).map(|s| s.as_str()).collect();
             handle_standard_action(arg1, &remaining_args);

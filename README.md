@@ -30,6 +30,9 @@ While library like Crabtime solve a similar problem, F_Comptime solves the limit
 | **Partial Embed** | **Can embed token partially** Using macro to embed multiple raw tokens to code partially. | **Can't embed partially**. |
 | **Async Support** | **Can use async code** Using tokio test to run async-await. | **Need additional setup** Need to setup async dependency and async runtime creation for every Crabtime macro scope. |
 | **Dependency** | **Shared dependencies with the main crate** Reuse the same compilation cache of the main crate dependencies. | **Copy dependencies to new separated project** Duplicating compilation artifacts that consumes SSD space. |
+| **Shareable** | **Can share the comptime logic cross project/crate** So that it can be reused with different input. | **Fixed, can't share the compile time logic** Can only share the output. |
+| **Nested** | **Support nested comptime** Can use comptime output inside other comptime. | **Can't use the compile time evaluation output inside other Crabtime macro** |
+
 
 ## Crates
 
@@ -136,6 +139,7 @@ The scope of the output and any code that uses the output. Used to toggle betwee
 ### `call!(full, "name", default)`
 ### `call!(partial, "name", code)`
 ### `call!(str in, "name", any_name { // use any_name })`
+### `call!(raw in, "name", let any_name { // use any_name })`
 
 Embed the output in the current line.
 
@@ -143,7 +147,8 @@ Embed the output in the current line.
 - `call!(full, "name")` — embed as non expression (top level declaration).
 - `call!(full, "name", default_expr)` — embed as non expression (top level declaration) with fallback item.
 - `call!(partial, "name", code)` — embed partial token.
-- `call!(str in, "name", any_name { // use any_name })` — call the result of other comptime inside other comptime (currently only support str/string, if want to make it to number use the build in method `.parse::<type>()`. can't embed raw token/syntax)
+- `call!(str in, "name", any_name { // use any_name })` — call the result of other comptime inside other comptime (only support str/string, if want to make it to number use the build in method `.parse::<type>()`. can't embed raw token/syntax)
+- `call!(raw in, "name", let any_name { // use any_name })` — call the result of other comptime inside other comptime as raw syntax as expression. Support `let name`, `let mut name`, `const name: type`
 
 ```rust
 let result = call!("result");
@@ -161,6 +166,10 @@ call!(partial, "result",
 call!(str in, "name", any_name {
     // parse to number type if need to be number
     let int = any_name.parse::<i32>.unwrap();
+});
+
+call!(raw in, "name", let any_name {
+    // use any_name
 });
 ```
 
@@ -184,9 +193,71 @@ comptime_source! {
 }
 ```
 
+## How to share the comptime logic cross project/crate
+
+* write the code in pure function, without any comptime macro
+* then the caller is the one that turns it into comptime mode by calling it inside comptime macro
+
+```rust
+// project a
+pub fn code_like_usual(input: i32) -> i32 {
+    input * 2
+}
+
+// project b
+use a::code_like_usual;
+
+#[comptime]
+fn any_name() {
+    source! {
+        let res = code_like_usual(10);
+        output!(raw, res, "my_output");
+    }
+
+    call_scope! {
+        let res = call!("my_output");
+        println!("{}", res);
+    }
+}
+```
+
 ---
 
-Only active when `cfg(all(test, feature = "comptime"))`.
+## How to use comptime output inside other comptime
+
+## By sharing the logic
+
+Many callers can use the same logic, equivalent to many callers use the same output
+
+```rust
+fn shared(a: i32) -> i32 {
+  a * 2
+}
+
+// user 1
+#[comptime]
+fn a1() {
+  source! {
+    let a = shared(10);
+    ...
+  }
+}
+
+// user 2
+#[comptime]
+fn a2() {
+  source! {
+    let a = shared(100);
+    ...
+  }
+}
+```
+
+## By calling the output
+
+---
+
+## Only active when `cfg(all(test, feature = "comptime"))`.
 
 The feature `comptime` makes sure the comptime code and pure test code can run be run independently
 
@@ -298,36 +369,6 @@ cargo comptime check
 
 ---
 
-## How to share the comptime logic cross project/crate
-
-* write the code in pure function, without any comptime macro
-* then the caller is the one that turns it into comptime mode by calling it inside comptime macro
-
-```rust
-// project a
-pub fn code_like_usual(input: i32) -> i32 {
-    input * 2
-}
-
-// project b
-use a::code_like_usual;
-
-#[comptime]
-fn any_name() {
-    source! {
-        let res = code_like_usual(10);
-        output!(raw, res, "my_output");
-    }
-
-    call_scope! {
-        let res = call!("my_output");
-        println!("{}", res);
-    }
-}
-```
-
----
-
 ## Add `/comptime/` folder to `.gitignore` to exclude it from the commit
 
 ```
@@ -337,13 +378,13 @@ fn any_name() {
 ---
 
 ## Known Limitation
-- Can not use comptime output inside other comptime as raw token/syntax yet (same limitation in Crabtime about this one)
+- Can not use comptime output inside other comptime as non expression raw token/syntax yet (same limitation in Crabtime about this one)
 
 ---
 
 ## Road Map
 
 - Add F_Comptime support in [R_Lib](https://github.com/fuji-184/RLib)
-- Figuring how to make using comptime output in other comptime possible
+- Figuring how to make using comptime output inside other comptime as non expression raw token/syntax possible
 
 ---

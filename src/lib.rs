@@ -175,8 +175,61 @@ pub fn process_comptime<T: std::fmt::Display>(
     }
 }
 
+
+
 #[macro_export]
 macro_rules! call {
+    (raw in, $name:literal, let mut $var:ident $body:block) => {
+        #[cfg(all(test, comptime_ready))]
+        {
+            let mut $var = include!(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name));
+            $body
+        }
+        
+        #[cfg(all(test, not(comptime_ready)))]
+        {
+          let path = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name));
+            
+            if path.exists() {
+            } else {
+                std::eprintln!("comptime error: raw output not found yet");
+            }
+        }
+    };
+    (raw in, $name:literal, let $var:ident $body:block) => {
+        #[cfg(all(test, comptime_ready))]
+        {
+            let $var = include!(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name));
+            $body
+        }
+        
+        #[cfg(all(test, not(comptime_ready)))]
+        {
+          let path = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name));
+            
+            if path.exists() {
+            } else {
+                std::eprintln!("comptime error: raw output not found yet");
+            }
+        }
+    };
+    (raw in, $name:literal, const $var:ident: $ty:ident $body:block) => {
+        #[cfg(all(test, comptime_ready))]
+        {
+            const $var: $ty = include!(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name));
+            $body
+        }
+        
+        #[cfg(all(test, not(comptime_ready)))]
+        {
+          let path = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name));
+            
+            if path.exists() {
+            } else {
+                std::eprintln!("comptime error: raw output not found yet");
+            }
+        }
+    };
     (str in, $name:literal, $val:ident $body:block) => {
         {
             if let Ok(content) = std::fs::read_to_string(concat!(
@@ -222,7 +275,10 @@ macro_rules! call {
         include!(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name));
     };
     ($name:literal) => {
+        { 
+        #[cfg(any(not(test), comptime_ready))]
         include!(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name))
+        }
     };
 }
 
@@ -272,7 +328,7 @@ macro_rules! parse {
 #[macro_export]
 macro_rules! call_scope {
     ($($t:tt)*) => {
-        #[cfg(not(test))]
+        #[cfg(all(not(test), not(comptime_ready)))]
         {
             $($t)*
         }
