@@ -454,7 +454,10 @@ cargo comptime check
 ---
 
 ## Known Limitation
-- Can not use comptime output inside other comptime as non expression raw token/syntax yet (same limitation in Crabtime about this one)
+same limitation in Crabtime about these ones
+- Can not use comptime output inside other comptime as non expression raw token/syntax yet
+- Can not know the parameter types and values
+- Can not know generic types and values
 
 ---
 
@@ -462,5 +465,7 @@ cargo comptime check
 
 - Add F_Comptime support in [R_Lib](https://github.com/fuji-184/RLib)
 - Figuring how to make using comptime output inside other comptime as non expression raw token/syntax possible
+- Figuring how to make knowing parameter types and values possible
+- Figuring how to make knowing generic types and values possible
 
 ---
