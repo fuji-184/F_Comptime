@@ -407,6 +407,15 @@ Example of the info content :
 
 Don't use any kind of println because it will not stop the step and print the message. But uses `panic!()`, it will stop the process and print the message
 
+```rust
+#[comptime]
+fn a() {
+  source! {
+    panic!("{}", some_val);
+  }
+}
+```
+
 ---
 
 ## Only active when `cfg(all(test, feature = "comptime"))`.
