@@ -227,7 +227,7 @@ fn any_name() {
 
 ### By sharing the logic
 
-Many callers can use the same logic, equivalent to many callers use the same output
+Many callers can use the same logic, equivalent to many callers use the same output. 
 
 ```rust
 fn shared(a: i32) -> i32 {
@@ -257,7 +257,7 @@ fn a2() {
 
 ### By calling the output
 
-Using `call!(raw in, "name", let var { })`. It can contains `let`, `let mut`, or `const: type`.
+Using `call!(raw in, "name", let var { })`. It can contains `let`, `let mut`, or `const: type`. This one can only be compiled with `cargo comptime run nested raw` because it has different step. Supports `run`, `check`, and `build`.
 
 ```rust
 #[comptime]
