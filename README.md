@@ -253,7 +253,31 @@ fn a2() {
 }
 ```
 
+---
+
 ### By calling the output
+
+Using `call!(raw in, "name", let var { })`. It can contains `let`, `let mut`, or `const: type`.
+
+```rust
+#[comptime]
+fn a1() {
+  source! {
+    let a = 2 * 2;
+    output!(raw, a, "a");
+  }
+}
+
+#[comptime]
+fn a2() {
+  source! {
+    call!(raw in, "a", const val: i32 {
+        // use the val of a here
+    });
+  }
+}
+
+```
 
 ---
 
