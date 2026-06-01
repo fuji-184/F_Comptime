@@ -403,6 +403,12 @@ Example of the info content :
 
 ---
 
+## How to do println debugging in the source macro
+
+Don't use any kind of println because it will not stop the step and print the message. But uses `panic!()`, it will stop the process and print the message
+
+---
+
 ## Only active when `cfg(all(test, feature = "comptime"))`.
 
 The feature `comptime` makes sure the comptime code and pure test code can run be run independently
