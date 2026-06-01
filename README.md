@@ -225,7 +225,7 @@ fn any_name() {
 
 ## How to use comptime output inside other comptime
 
-## By sharing the logic
+### By sharing the logic
 
 Many callers can use the same logic, equivalent to many callers use the same output
 
@@ -253,7 +253,7 @@ fn a2() {
 }
 ```
 
-## By calling the output
+### By calling the output
 
 ---
 
