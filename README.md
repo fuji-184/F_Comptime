@@ -33,6 +33,7 @@ While library like Crabtime solve a similar problem, F_Comptime solves the limit
 | **Shareable** | **Can share the comptime logic cross project/crate** So that it can be reused with different input. | **Fixed, can't share the compile time logic** Can only share the output. |
 | **Nested** | **Support nested comptime** Can use comptime output inside other comptime. | **Can't use the compile time evaluation output inside other Crabtime macro** |
 | **Impl And Trait Support** | **Support Impl and Trait** Can use comptime inside method that takes `self` parameter. | **Limited Support** Can only be used in assosiated function |
+| **Parameter Types And Values Info** | **Currently can do some of them** Support for info about normal fn parameter types, normal fn parameter value, generic fn types, and generic fn values. It doesn't support method inside impl block without potential duplicate names and Trait yet. | **Can't know types and values info of fn and generic parameter** |
 
 ## Crates
 
@@ -326,6 +327,78 @@ fn a2() {
   }
 }
 
+```
+
+---
+
+## Knowing Parameter Types And Values Info with `#[info]` and `get!()`
+
+### `#[info`
+
+Inspect the types and values of parameters (both `normal and generic`). `Currently only support pure function`. `It can be used inside impl and trait but the method name must be unique globally`. It must be placed above function that is the function declaration itself, and other function that call the declaration function
+
+```rust
+#[info]
+fn a<T>(b: T) {
+  
+}
+
+#[info]
+fn b() {
+  // b calls a
+  a::<i32>();
+}
+```
+
+---
+
+### `get!()`
+
+Gets the info of specific function. It returns `Option<Info>`.
+
+```rust
+#[info]
+fn a<T>(b: T) {
+  
+}
+
+#[info]
+fn b() {
+  // b calls a
+  a::<i32>();
+}
+
+#[comptime]
+fn main() {
+  source! {
+    let info_a = get!("a");
+    // use the info
+  }
+}
+```
+
+Example of the info content :
+
+```json
+{
+  "name": "my_function2",
+  "line": 12,
+  "generics": ["T", "U"],
+  "where": [{"generic": "T", "bounds": ": Sync + std::fmt::Debug"}, {"generic": "U", "bounds": ": Send"}],
+  "parameters": [{"name": "a", "type": "T"}, {"name": "b", "type": "U"}],
+  "callers": [
+    {
+      "generics": ["i32", "&'static str"],
+      "values": ["1000", "\"uwu\""],
+      "line": 28
+    },
+    {
+      "generics": ["i32", "&'static str"],
+      "values": ["1000", "\"uwu\""],
+      "line": 30
+    }
+  ]
+}
 ```
 
 ---

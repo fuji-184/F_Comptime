@@ -7,6 +7,9 @@ use proc_macro::TokenStream;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tree_sitter::{Parser, Query, QueryCursor, StreamingIterator};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+
 
 fn resolve_target_file(span: proc_macro::Span, src_dir: &Path, start_line: usize) -> Option<PathBuf> {
     #[cfg(feature = "nightly")]
@@ -475,4 +478,314 @@ pub fn comptime_type(input: TokenStream) -> TokenStream {
     }
 
     result.parse().unwrap_or_else(|_| TokenStream::new())
+}
+
+static INITIALIZED: AtomicBool = AtomicBool::new(false);
+static FILE_LOCK: Mutex<()> = Mutex::new(());
+
+#[proc_macro_attribute]
+pub fn info(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let item_str = item.to_string();
+
+    let macro_start_line = proc_macro::Span::call_site().start().line();
+
+    let _guard = FILE_LOCK.lock().unwrap();
+
+    let mut parser = Parser::new();
+    parser.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
+    let tree = parser.parse(&item_str, None).unwrap();
+    let root_node = tree.root_node();
+
+    let _ = std::fs::create_dir_all("./comptime");
+
+    if !INITIALIZED.load(Ordering::SeqCst) {
+        if let Ok(entries) = std::fs::read_dir("./comptime") {
+            for entry in entries.flatten() {
+                if let Ok(file_type) = entry.file_type() {
+                    if file_type.is_file() && entry.file_name().to_string_lossy().ends_with(".json") {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                }
+            }
+        }
+        INITIALIZED.store(true, Ordering::SeqCst);
+    }
+
+    let func_query = Query::new(
+        &tree_sitter_rust::LANGUAGE.into(),
+        "(function_item) @func",
+    ).unwrap();
+    let mut func_cursor = QueryCursor::new();
+    let mut func_matches = func_cursor.matches(&func_query, root_node, item_str.as_bytes());
+
+    let func_node = match func_matches.next().and_then(|m| m.captures.first()) {
+        Some(capture) => capture.node,
+        None => return item,
+    };
+
+    let mut func_name = String::new();
+    if let Some(name_node) = func_node.child_by_field_name("name") {
+        func_name = name_node.utf8_text(item_str.as_bytes()).unwrap_or_default().trim().to_string();
+    }
+
+    if func_name.is_empty() {
+        return item;
+    }
+
+    let mut generics = Vec::new();
+    let mut traits_list = Vec::new();
+
+    if let Some(type_params) = func_node.child_by_field_name("type_parameters") {
+        let mut tc = type_params.walk();
+        for child in type_params.children(&mut tc) {
+            if child.kind() == "type_parameter" || child.kind() == "constrained_type_parameter" {
+                if let Some(id) = child.child_by_field_name("name").or_else(|| child.child(0)) {
+                    let g_name = id.utf8_text(item_str.as_bytes()).unwrap_or_default().trim().to_string();
+                    generics.push(g_name.clone());
+                    
+                    let mut child_c = child.walk();
+                    for sub_child in child.children(&mut child_c) {
+                        if sub_child.kind() == "type_bound" || sub_child.kind() == "trait_bounds" {
+                            let bound_text = sub_child.utf8_text(item_str.as_bytes()).unwrap_or_default().trim().to_string();
+                            traits_list.push(format!("{{\"generic\": \"{}\", \"bounds\": \"{}\"}}", g_name, bound_text.replace(':', "").trim()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let where_query = Query::new(
+        &tree_sitter_rust::LANGUAGE.into(),
+        "(where_predicate left: (_) @left bounds: (_) @bounds)",
+    ).unwrap();
+    let mut where_cursor = QueryCursor::new();
+    let mut where_matches = where_cursor.matches(&where_query, func_node, item_str.as_bytes());
+
+    while let Some(wm) = where_matches.next() {
+        let mut left_text = String::new();
+        let mut bounds_text = String::new();
+        for capture in wm.captures {
+            let index = capture.index;
+            let node = capture.node;
+            if index == 0 {
+                left_text = node.utf8_text(item_str.as_bytes()).unwrap_or_default().trim().to_string();
+            } else if index == 1 {
+                bounds_text = node.utf8_text(item_str.as_bytes()).unwrap_or_default().trim().to_string();
+            }
+        }
+        if !left_text.is_empty() && !bounds_text.is_empty() {
+            traits_list.push(format!("{{\"generic\": \"{}\", \"bounds\": \"{}\"}}", left_text, bounds_text));
+        }
+    }
+
+    let mut parameters = Vec::new();
+    if let Some(params) = func_node.child_by_field_name("parameters") {
+        let mut tc = params.walk();
+        for child in params.children(&mut tc) {
+            if child.kind() == "parameter" {
+                let p_name = child.child_by_field_name("pattern")
+                    .map(|n| n.utf8_text(item_str.as_bytes()).unwrap_or_default().trim().to_string())
+                    .unwrap_or_default();
+                let p_type = child.child_by_field_name("type")
+                    .map(|n| n.utf8_text(item_str.as_bytes()).unwrap_or_default().trim().to_string())
+                    .unwrap_or_default();
+                parameters.push((p_name, p_type));
+            }
+        }
+    }
+
+    let generics_json = generics.iter().map(|g| format!("\"{}\"", g)).collect::<Vec<_>>().join(", ");
+    let where_json = traits_list.join(", ");
+    let params_json = parameters.iter()
+        .map(|(n, t)| format!("{{\"name\": \"{}\", \"type\": \"{}\"}}", n, t))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let target_path = format!("./comptime/{}.json", func_name);
+
+    let mut existing_callers = String::new();
+    if std::path::Path::new(&target_path).exists() {
+        if let Ok(content) = std::fs::read_to_string(&target_path) {
+            if let Some(start_idx) = content.find("\"callers\": [") {
+                let part = &content[start_idx + 12..];
+                if let Some(end_idx) = part.rfind(']') {
+                    existing_callers = part[..end_idx].trim().to_string();
+                }
+            }
+        }
+    }
+
+    let call_query = Query::new(
+        &tree_sitter_rust::LANGUAGE.into(),
+        "(call_expression) @call",
+    ).unwrap();
+    let mut call_cursor = QueryCursor::new();
+    let mut call_matches = call_cursor.matches(&call_query, root_node, item_str.as_bytes());
+
+    let mut detected_callers = std::collections::HashMap::new();
+
+    while let Some(m) = call_matches.next() {
+        for capture in m.captures {
+            let node = capture.node;
+            let mut target_func = String::new();
+            let mut generic_args = Vec::new();
+            let mut val_exprs = Vec::new();
+
+            let func_node = match node.child_by_field_name("function") {
+                Some(f) => f,
+                None => continue,
+            };
+
+            if func_node.kind() == "field_expression" {
+                if let Some(method_node) = func_node.child_by_field_name("field") {
+                    target_func = method_node.utf8_text(item_str.as_bytes()).unwrap_or_default().trim().to_string();
+                }
+                if let Some(receiver) = func_node.child_by_field_name("value") {
+                    val_exprs.push(receiver.utf8_text(item_str.as_bytes()).unwrap_or_default().trim().to_string());
+                }
+            } else if func_node.kind() == "generic_function" {
+                let base_func = func_node.child_by_field_name("function").or_else(|| func_node.child(0));
+                if let Some(bf) = base_func {
+                    if bf.kind() == "field_expression" {
+                        if let Some(method_node) = bf.child_by_field_name("field") {
+                            target_func = method_node.utf8_text(item_str.as_bytes()).unwrap_or_default().trim().to_string();
+                        }
+                        if let Some(receiver) = bf.child_by_field_name("value") {
+                            val_exprs.push(receiver.utf8_text(item_str.as_bytes()).unwrap_or_default().trim().to_string());
+                        }
+                    } else {
+                        target_func = bf.utf8_text(item_str.as_bytes()).unwrap_or_default().trim().to_string();
+                    }
+                }
+                
+                let mut nc = func_node.walk();
+                if let Some(type_args_node) = func_node.children(&mut nc).find(|c| c.kind() == "type_arguments") {
+                    let mut tc = type_args_node.walk();
+                    for child in type_args_node.children(&mut tc) {
+                        let kind = child.kind();
+                        if kind != "<" && kind != ">" && kind != "," {
+                            generic_args.push(child.utf8_text(item_str.as_bytes()).unwrap_or_default().trim().to_string());
+                        }
+                    }
+                }
+            } else {
+                target_func = func_node.utf8_text(item_str.as_bytes()).unwrap_or_default().trim().to_string();
+            }
+
+            if let Some(args_node) = node.child_by_field_name("arguments") {
+                let mut ac = args_node.walk();
+                for child in args_node.children(&mut ac) {
+                    let kind = child.kind();
+                    if kind != "(" && kind != ")" && kind != "," {
+                        val_exprs.push(child.utf8_text(item_str.as_bytes()).unwrap_or_default().trim().to_string());
+                    }
+                }
+            }
+
+            if target_func.is_empty() {
+                continue;
+            }
+
+            let relative_line = node.start_position().row;
+            let real_line = macro_start_line + relative_line;
+
+            let gen_json = generic_args.iter().map(|g| format!("\"{}\"", g.replace('"', "\\\""))).collect::<Vec<_>>().join(", ");
+            let val_json = val_exprs.iter().map(|v| format!("\"{}\"", v.replace('"', "\\\""))).collect::<Vec<_>>().join(", ");
+
+            let caller_entry = format!(
+                "{{\n      \"generics\": [{}],\n      \"values\": [{}],\n      \"line\": {}\n    }}",
+                gen_json, val_json, real_line
+            );
+
+            detected_callers.entry(target_func).or_insert_with(Vec::new).push(caller_entry);
+        }
+    }
+
+    for (t_func, callers) in detected_callers {
+        let path = format!("./comptime/{}.json", t_func);
+        let mut sub_existing = String::new();
+        let mut sub_content = String::new();
+
+        if std::path::Path::new(&path).exists() {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                sub_content = content.clone();
+                if let Some(start_idx) = content.find("\"callers\": [") {
+                    let part = &content[start_idx + 12..];
+                    if let Some(end_idx) = part.rfind(']') {
+                        let trimmed = part[..end_idx].trim();
+                        if !trimmed.is_empty() {
+                            sub_existing.push_str(trimmed);
+                            sub_existing.push_str(",\n    ");
+                        }
+                    }
+                }
+            }
+        }
+
+        sub_existing.push_str(&callers.join(",\n    "));
+
+        let mut out_json = String::new();
+        if !sub_content.is_empty() {
+            if let Some(c_idx) = sub_content.find("\"callers\": [") {
+                out_json.push_str(&sub_content[..c_idx + 12]);
+                out_json.push_str("\n    ");
+                out_json.push_str(&sub_existing);
+                out_json.push_str("\n  ]\n}");
+            }
+        } else {
+            out_json.push_str("{\n");
+            out_json.push_str(&format!("  \"name\": \"{}\",\n", t_func));
+            out_json.push_str("  \"line\": null,\n");
+            out_json.push_str("  \"generics\": [],\n");
+            out_json.push_str("  \"where\": [],\n");
+            out_json.push_str("  \"parameters\": [],\n");
+            out_json.push_str("  \"callers\": [\n    ");
+            out_json.push_str(&sub_existing);
+            out_json.push_str("\n  ]\n}");
+        }
+
+        let _ = std::fs::write(&path, out_json);
+    }
+
+    let mut final_content = String::new();
+    let final_callers = existing_callers;
+
+    if std::path::Path::new(&target_path).exists() {
+        if let Ok(content) = std::fs::read_to_string(&target_path) {
+            final_content = content;
+        }
+    }
+
+    let mut out_json = String::new();
+    if !final_content.is_empty() {
+        if let Some(c_idx) = final_content.find("\"callers\": [") {
+            out_json.push_str(&final_content[..c_idx]);
+            out_json.push_str("\"line\": ");
+            out_json.push_str(&macro_start_line.to_string());
+            out_json.push_str(",\n  \"generics\": [");
+            out_json.push_str(&generics_json);
+            out_json.push_str("],\n  \"where\": [");
+            out_json.push_str(&where_json);
+            out_json.push_str("],\n  \"parameters\": [");
+            out_json.push_str(&params_json);
+            out_json.push_str("],\n  \"callers\": [\n    ");
+            out_json.push_str(&final_callers);
+            out_json.push_str("\n  ]\n}");
+        }
+    } else {
+        out_json.push_str("{\n");
+        out_json.push_str(&format!("  \"name\": \"{}\",\n", func_name));
+        out_json.push_str(&format!("  \"line\": {},\n", macro_start_line));
+        out_json.push_str(&format!("  \"generics\": [{}],\n", generics_json));
+        out_json.push_str(&format!("  \"where\": [{}],\n", where_json));
+        out_json.push_str(&format!("  \"parameters\": [{}],\n", params_json));
+        out_json.push_str("  \"callers\": [\n    ");
+        out_json.push_str(&final_callers);
+        out_json.push_str("\n  ]\n}");
+    }
+
+    let _ = std::fs::write(&target_path, out_json);
+
+    item
 }

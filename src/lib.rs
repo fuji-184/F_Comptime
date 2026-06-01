@@ -6,12 +6,15 @@ pub use fcomptime_macro::*;
 #[cfg(feature = "async")]
 pub use tokio;
 
+pub use serde_json;
+
 pub mod prelude;
 
 use std::sync::{Mutex, OnceLock};
 use std::collections::HashSet;
 use std::backtrace::Backtrace;
 use std::fmt;
+use serde::Deserialize;
 
 const RED: &str = "\x1b[41;1m";
 const GREEN: &str = "\x1b[92m";
@@ -354,6 +357,44 @@ macro_rules! async_source {
         #[cfg(test)]
         {
            let _ = async { $($t)* };
+        }
+    };
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Info {
+    pub name: String,
+    pub line: usize,
+    pub generics: Vec<String>,
+    #[serde(rename = "where")]
+    pub where_clause: Vec<WhereClause>,
+    pub parameters: Vec<Parameter>,
+    pub callers: Vec<Caller>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WhereClause { pub generic: String, pub bounds: String }
+
+#[derive(Debug, Deserialize)]
+pub struct Parameter { pub name: String,
+    #[serde(rename = "type")]
+    pub type_: String }
+
+#[derive(Debug, Deserialize)]
+pub struct Caller {
+    pub generics: Vec<String>,
+    pub values: Vec<String>,
+    pub line: usize,
+}
+
+#[macro_export]
+macro_rules! get {
+    ($filename:expr) => {
+        {
+            let path = format!("./comptime/{}.json", $filename);
+            std::fs::read_to_string(path)
+                .ok()
+                .and_then(|content| $crate::serde_json::from_str::<$crate::Info>(&content).ok())
         }
     };
 }

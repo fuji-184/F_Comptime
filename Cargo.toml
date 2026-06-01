@@ -7,6 +7,8 @@ edition = "2024"
 paste = "*"
 fcomptime_macro = { path = "./fcomptime_macro", features = [], optional = true }
 tokio = { version = "*", features = ["full"], optional = true }
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"
 
 [features]
 default = ["fcomptime_macro"]

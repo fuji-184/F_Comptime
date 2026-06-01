@@ -5,5 +5,7 @@ pub use crate::{
     output, 
     call_scope, 
     call, 
-    comptime_source
+    comptime_source,
+    info,
+    get
 };
