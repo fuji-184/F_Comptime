@@ -32,7 +32,7 @@ While library like Crabtime solve a similar problem, F_Comptime solves the limit
 | **Dependency** | **Shared dependencies with the main crate** Reuse the same compilation cache of the main crate dependencies. | **Copy dependencies to new separated project** Duplicating compilation artifacts that consumes SSD space. |
 | **Shareable** | **Can share the comptime logic cross project/crate** So that it can be reused with different input. | **Fixed, can't share the compile time logic** Can only share the output. |
 | **Nested** | **Support nested comptime** Can use comptime output inside other comptime. | **Can't use the compile time evaluation output inside other Crabtime macro** |
-
+| **Impl And Trait Support** | **Support Impl and Trait** Can use comptime inside method that takes `self` parameter. | **Limited Support** Can only be used in assosiated function |
 
 ## Crates
 
@@ -175,7 +175,6 @@ call!(raw in, "name", let any_name {
 
 ---
 
-
 ### `comptime_source! { ... }`
 
 Creates top level comptime source declaration. It is like `build.rs` but can call code from main crate directly and put back some output to main crate
@@ -192,6 +191,56 @@ comptime_source! {
     }
 }
 ```
+
+---
+
+## How to use the comptime in Impl and Trait
+
+Just place the `#[comptime]` above the declaration, then write the comptime macro normally
+
+```rust
+struct Data;
+
+#[comptime]
+impl Data {
+  fn a() {
+    ...
+    source!{
+      
+    }
+    ...
+  }
+  
+  fn b() {
+    ...
+    source!{
+      
+    }
+    ...
+  }
+}
+
+#[comptime]
+trait Trait {
+  fn a() {
+    ...
+    source!{
+      
+    }
+    ...
+  }
+  
+  fn b() {
+    ...
+    source!{
+      
+    }
+    ...
+  }
+}
+```
+
+---
 
 ## How to share the comptime logic cross project/crate
 

@@ -74,6 +74,7 @@ fn build_rerun_token(path: &Path, source: &str) -> TokenStream {
     }
 }
 
+
 #[proc_macro_attribute]
 pub fn comptime(attr: TokenStream, item: TokenStream) -> TokenStream {
     let _ = attr;
@@ -105,24 +106,7 @@ pub fn comptime(attr: TokenStream, item: TokenStream) -> TokenStream {
         p.parse(&item_str, None).unwrap()
     };
 
-    let fn_start_line = {
-        let q = Query::new(
-            &tree_sitter_rust::LANGUAGE.into(),
-            "(function_item name: (identifier) @fn_name)",
-        ).unwrap();
-        let mut qc = QueryCursor::new();
-        let mut qm = qc.matches(&q, item_tree.root_node(), item_str.as_bytes());
-        let fn_name = qm.next()
-            .and_then(|m| m.captures.first())
-            .and_then(|c| c.node.utf8_text(item_str.as_bytes()).ok())
-            .unwrap_or("")
-            .to_string();
-        source_code.lines()
-            .enumerate()
-            .find(|(_, line)| line.contains(&format!("fn {}", fn_name)))
-            .map(|(i, _)| i)
-            .unwrap_or(0)
-    };
+    let base_line = span.start().line();
 
     let query_macro = Query::new(
         &tree_sitter_rust::LANGUAGE.into(),
@@ -138,19 +122,19 @@ pub fn comptime(attr: TokenStream, item: TokenStream) -> TokenStream {
     while let Some(m) = macro_matches.next() {
         let mut macro_name = "";
         let mut body_node = None;
-        let mut call_line = 0usize;
+        let mut macro_node = None;
 
         for capture in m.captures {
             let cname = query_macro.capture_names()[capture.index as usize];
             if cname == "m_name" {
                 macro_name = capture.node.utf8_text(item_str.as_bytes()).unwrap_or("");
-                call_line = fn_start_line + capture.node.start_position().row + 1;
+                macro_node = Some(capture.node);
             } else if cname == "m_body" {
                 body_node = Some(capture.node);
             }
         }
 
-        if macro_name != "source"  && macro_name != "async_source" {
+        if macro_name != "source" && macro_name != "async_source" {
             continue;
         }
 
@@ -158,6 +142,21 @@ pub fn comptime(attr: TokenStream, item: TokenStream) -> TokenStream {
             Some(b) => b,
             None => continue,
         };
+
+        let m_node = macro_node.unwrap();
+        
+        let macro_relative_row = m_node.start_position().row;
+        let mut call_line = base_line + macro_relative_row;
+
+        if let Some(actual_line) = source_code.lines()
+            .enumerate()
+            .skip(base_line.saturating_sub(2)) 
+            .take(macro_relative_row + 10)
+            .find(|(_, line)| line.contains(&format!("{}!", macro_name)))
+            .map(|(i, _)| i + 1) 
+        {
+            call_line = actual_line;
+        }
 
         let body_text = body_node.utf8_text(item_str.as_bytes()).unwrap_or("").to_string();
         let mut body_lines = body_text.lines().collect::<Vec<&str>>();
@@ -291,7 +290,7 @@ pub fn comptime(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
 
-        let test_fn_name = format!("comptime_line_{}_{}", call_line, test_mods.len());
+        let test_fn_name = format!("comptime_line_{}", call_line);
         let test_mod = if macro_name == "async_source" {
             format!(
                 "#[cfg(test)]\nmod {} {{\n    use super::*;\n    #[tokio::test]\n    async fn run() {{\n{}{}}}\n}}\n",
