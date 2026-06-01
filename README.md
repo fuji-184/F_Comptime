@@ -304,6 +304,9 @@ cargo comptime build --release
 cargo comptime run
 cargo comptime init config
 cargo comptime path/to/comptime.config
+cargo comptime check nested raw
+cargo comptime run nested raw
+cargo comptime build nested raw --release
 ```
 
 ### Cargo-Comptime Config
