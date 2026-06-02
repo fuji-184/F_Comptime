@@ -369,6 +369,8 @@ pub struct Info {
     #[serde(rename = "where")]
     pub where_clause: Vec<WhereClause>,
     pub parameters: Vec<Parameter>,
+    #[serde(rename = "return_type")]
+    pub return_type: String,
     pub callers: Vec<Caller>,
 }
 
@@ -387,14 +389,21 @@ pub struct Caller {
     pub line: usize,
 }
 
+pub fn read_comptime_data(filename: &str) -> Option<Info> {
+    let path = format!("./comptime/{}.json", filename);
+    let content = std::fs::read_to_string(&path).ok()?;
+    match serde_json::from_str::<Info>(&content) {
+        Ok(info) => Some(info),
+        Err(e) => {
+            panic!("Error parsing JSON {}: {}", path, e);
+            None
+        }
+    }
+}
+
 #[macro_export]
 macro_rules! get {
     ($filename:expr) => {
-        {
-            let path = format!("./comptime/{}.json", $filename);
-            std::fs::read_to_string(path)
-                .ok()
-                .and_then(|content| $crate::serde_json::from_str::<$crate::Info>(&content).ok())
-        }
+        $crate::read_comptime_data($filename)
     };
 }

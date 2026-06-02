@@ -384,18 +384,19 @@ Example of the info content :
   "name": "my_function2",
   "line": 12,
   "generics": ["T", "U"],
-  "where": [{"generic": "T", "bounds": ": Sync + std::fmt::Debug"}, {"generic": "U", "bounds": ": Send"}],
+  "where": [{"generic": "T", "bounds": "Sync + std::fmt::Debug"}, {"generic": "U", "bounds": "Send"}],
   "parameters": [{"name": "a", "type": "T"}, {"name": "b", "type": "U"}],
+  "return_type": "Result<(), std::io::Error>",
   "callers": [
     {
       "generics": ["i32", "&'static str"],
       "values": ["1000", "\"uwu\""],
-      "line": 28
+      "line": 31
     },
     {
       "generics": ["i32", "&'static str"],
       "values": ["1000", "\"uwu\""],
-      "line": 30
+      "line": 33
     }
   ]
 }

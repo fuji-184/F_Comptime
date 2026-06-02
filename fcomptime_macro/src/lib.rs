@@ -531,6 +531,12 @@ pub fn info(_attr: TokenStream, item: TokenStream) -> TokenStream {
     if func_name.is_empty() {
         return item;
     }
+    
+    let mut return_type = String::from("()");
+    if let Some(type_node) = func_node.child_by_field_name("return_type") {
+        return_type = type_node.utf8_text(item_str.as_bytes()).unwrap_or("()").trim().to_string();
+        return_type = return_type.trim_start_matches("->").trim().to_string();
+    }
 
     let mut generics = Vec::new();
     let mut traits_list = Vec::new();
@@ -575,7 +581,12 @@ pub fn info(_attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
         if !left_text.is_empty() && !bounds_text.is_empty() {
-            traits_list.push(format!("{{\"generic\": \"{}\", \"bounds\": \"{}\"}}", left_text, bounds_text));
+            let result = if let Some(stripped) = bounds_text.strip_prefix(':') {
+                stripped.trim_start()
+            } else {
+                &bounds_text
+            };
+            traits_list.push(format!("{{\"generic\": \"{}\", \"bounds\": \"{}\"}}", left_text, result));
         }
     }
 
@@ -596,7 +607,7 @@ pub fn info(_attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 
     let generics_json = generics.iter().map(|g| format!("\"{}\"", g)).collect::<Vec<_>>().join(", ");
-    let where_json = traits_list.join(", ");
+    let where_json = traits_list.join(", ").replace("\n", " ");
     let params_json = parameters.iter()
         .map(|(n, t)| format!("{{\"name\": \"{}\", \"type\": \"{}\"}}", n, t))
         .collect::<Vec<_>>()
@@ -740,6 +751,7 @@ pub fn info(_attr: TokenStream, item: TokenStream) -> TokenStream {
             out_json.push_str("  \"generics\": [],\n");
             out_json.push_str("  \"where\": [],\n");
             out_json.push_str("  \"parameters\": [],\n");
+            out_json.push_str("  \"return_type\": null,\n");
             out_json.push_str("  \"callers\": [\n    ");
             out_json.push_str(&sub_existing);
             out_json.push_str("\n  ]\n}");
@@ -769,7 +781,8 @@ pub fn info(_attr: TokenStream, item: TokenStream) -> TokenStream {
             out_json.push_str(&where_json);
             out_json.push_str("],\n  \"parameters\": [");
             out_json.push_str(&params_json);
-            out_json.push_str("],\n  \"callers\": [\n    ");
+            out_json.push_str(&format!("],\n  \"return_type\": \"{}\",\n", return_type));
+            out_json.push_str("\"callers\": [\n    ");
             out_json.push_str(&final_callers);
             out_json.push_str("\n  ]\n}");
         }
@@ -780,6 +793,7 @@ pub fn info(_attr: TokenStream, item: TokenStream) -> TokenStream {
         out_json.push_str(&format!("  \"generics\": [{}],\n", generics_json));
         out_json.push_str(&format!("  \"where\": [{}],\n", where_json));
         out_json.push_str(&format!("  \"parameters\": [{}],\n", params_json));
+        out_json.push_str(&format!("  \"return_type\": \"{}\",\n", return_type));
         out_json.push_str("  \"callers\": [\n    ");
         out_json.push_str(&final_callers);
         out_json.push_str("\n  ]\n}");
