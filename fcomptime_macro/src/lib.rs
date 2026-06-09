@@ -486,9 +486,7 @@ static FILE_LOCK: Mutex<()> = Mutex::new(());
 #[proc_macro_attribute]
 pub fn info(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let item_str = item.to_string();
-
     let macro_start_line = proc_macro::Span::call_site().start().line();
-
     let _guard = FILE_LOCK.lock().unwrap();
 
     let mut parser = Parser::new();
@@ -553,7 +551,10 @@ pub fn info(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     for sub_child in child.children(&mut child_c) {
                         if sub_child.kind() == "type_bound" || sub_child.kind() == "trait_bounds" {
                             let bound_text = sub_child.utf8_text(item_str.as_bytes()).unwrap_or_default().trim().to_string();
-                            traits_list.push(format!("{{\"generic\": \"{}\", \"bounds\": \"{}\"}}", g_name, bound_text.replace(':', "").trim()));
+                            traits_list.push(serde_json::json!({
+                                "generic": g_name,
+                                "bounds": bound_text.replace(':', "").trim().to_string()
+                            }));
                         }
                     }
                 }
@@ -586,7 +587,10 @@ pub fn info(_attr: TokenStream, item: TokenStream) -> TokenStream {
             } else {
                 &bounds_text
             };
-            traits_list.push(format!("{{\"generic\": \"{}\", \"bounds\": \"{}\"}}", left_text, result));
+            traits_list.push(serde_json::json!({
+                "generic": left_text,
+                "bounds": result.to_string()
+            }));
         }
     }
 
@@ -601,28 +605,10 @@ pub fn info(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 let p_type = child.child_by_field_name("type")
                     .map(|n| n.utf8_text(item_str.as_bytes()).unwrap_or_default().trim().to_string())
                     .unwrap_or_default();
-                parameters.push((p_name, p_type));
-            }
-        }
-    }
-
-    let generics_json = generics.iter().map(|g| format!("\"{}\"", g)).collect::<Vec<_>>().join(", ");
-    let where_json = traits_list.join(", ").replace("\n", " ");
-    let params_json = parameters.iter()
-        .map(|(n, t)| format!("{{\"name\": \"{}\", \"type\": \"{}\"}}", n, t))
-        .collect::<Vec<_>>()
-        .join(", ");
-
-    let target_path = format!("./comptime/{}.json", func_name);
-
-    let mut existing_callers = String::new();
-    if std::path::Path::new(&target_path).exists() {
-        if let Ok(content) = std::fs::read_to_string(&target_path) {
-            if let Some(start_idx) = content.find("\"callers\": [") {
-                let part = &content[start_idx + 12..];
-                if let Some(end_idx) = part.rfind(']') {
-                    existing_callers = part[..end_idx].trim().to_string();
-                }
+                parameters.push(serde_json::json!({
+                    "name": p_name,
+                    "type": p_type
+                }));
             }
         }
     }
@@ -701,105 +687,69 @@ pub fn info(_attr: TokenStream, item: TokenStream) -> TokenStream {
             let relative_line = node.start_position().row;
             let real_line = macro_start_line + relative_line;
 
-            let gen_json = generic_args.iter().map(|g| format!("\"{}\"", g.replace('"', "\\\""))).collect::<Vec<_>>().join(", ");
-            let val_json = val_exprs.iter().map(|v| format!("\"{}\"", v.replace('"', "\\\""))).collect::<Vec<_>>().join(", ");
-
-            let caller_entry = format!(
-                "{{\n      \"generics\": [{}],\n      \"values\": [{}],\n      \"line\": {}\n    }}",
-                gen_json, val_json, real_line
-            );
+            let caller_entry = serde_json::json!({
+                "generics": generic_args,
+                "values": val_exprs,
+                "line": real_line
+            });
 
             detected_callers.entry(target_func).or_insert_with(Vec::new).push(caller_entry);
         }
     }
 
-    for (t_func, callers) in detected_callers {
+    for (t_func, mut callers) in detected_callers {
         let path = format!("./comptime/{}.json", t_func);
-        let mut sub_existing = String::new();
-        let mut sub_content = String::new();
-
-        if std::path::Path::new(&path).exists() {
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                sub_content = content.clone();
-                if let Some(start_idx) = content.find("\"callers\": [") {
-                    let part = &content[start_idx + 12..];
-                    if let Some(end_idx) = part.rfind(']') {
-                        let trimmed = part[..end_idx].trim();
-                        if !trimmed.is_empty() {
-                            sub_existing.push_str(trimmed);
-                            sub_existing.push_str(",\n    ");
-                        }
-                    }
-                }
-            }
-        }
-
-        sub_existing.push_str(&callers.join(",\n    "));
-
-        let mut out_json = String::new();
-        if !sub_content.is_empty() {
-            if let Some(c_idx) = sub_content.find("\"callers\": [") {
-                out_json.push_str(&sub_content[..c_idx + 12]);
-                out_json.push_str("\n    ");
-                out_json.push_str(&sub_existing);
-                out_json.push_str("\n  ]\n}");
-            }
+        let mut doc: serde_json::Value = if std::path::Path::new(&path).exists() {
+            std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|c| serde_json::from_str(&c).ok())
+                .unwrap_or_else(|| serde_json::json!({}))
         } else {
-            out_json.push_str("{\n");
-            out_json.push_str(&format!("  \"name\": \"{}\",\n", t_func));
-            out_json.push_str("  \"line\": null,\n");
-            out_json.push_str("  \"generics\": [],\n");
-            out_json.push_str("  \"where\": [],\n");
-            out_json.push_str("  \"parameters\": [],\n");
-            out_json.push_str("  \"return_type\": null,\n");
-            out_json.push_str("  \"callers\": [\n    ");
-            out_json.push_str(&sub_existing);
-            out_json.push_str("\n  ]\n}");
+            serde_json::json!({})
+        };
+
+        if doc.get("name").is_none() {
+            doc["name"] = serde_json::Value::String(t_func.clone());
+            doc["line"] = serde_json::Value::Null;
+            doc["generics"] = serde_json::Value::Array(Vec::new());
+            doc["where"] = serde_json::Value::Array(Vec::new());
+            doc["parameters"] = serde_json::Value::Array(Vec::new());
+            doc["return_type"] = serde_json::Value::Null;
+            doc["callers"] = serde_json::Value::Array(Vec::new());
         }
 
-        let _ = std::fs::write(&path, out_json);
-    }
+        if let Some(existing_callers) = doc["callers"].as_array_mut() {
+            existing_callers.append(&mut callers);
+        }
 
-    let mut final_content = String::new();
-    let final_callers = existing_callers;
-
-    if std::path::Path::new(&target_path).exists() {
-        if let Ok(content) = std::fs::read_to_string(&target_path) {
-            final_content = content;
+        if let Ok(out_json) = serde_json::to_string_pretty(&doc) {
+            let _ = std::fs::write(&path, out_json);
         }
     }
 
-    let mut out_json = String::new();
-    if !final_content.is_empty() {
-        if let Some(c_idx) = final_content.find("\"callers\": [") {
-            out_json.push_str(&final_content[..c_idx]);
-            out_json.push_str("\"line\": ");
-            out_json.push_str(&macro_start_line.to_string());
-            out_json.push_str(",\n  \"generics\": [");
-            out_json.push_str(&generics_json);
-            out_json.push_str("],\n  \"where\": [");
-            out_json.push_str(&where_json);
-            out_json.push_str("],\n  \"parameters\": [");
-            out_json.push_str(&params_json);
-            out_json.push_str(&format!("],\n  \"return_type\": \"{}\",\n", return_type));
-            out_json.push_str("\"callers\": [\n    ");
-            out_json.push_str(&final_callers);
-            out_json.push_str("\n  ]\n}");
-        }
+    let target_path = format!("./comptime/{}.json", func_name);
+    let mut target_doc: serde_json::Value = if std::path::Path::new(&target_path).exists() {
+        std::fs::read_to_string(&target_path)
+            .ok()
+            .and_then(|c| serde_json::from_str(&c).ok())
+            .unwrap_or_else(|| serde_json::json!({}))
     } else {
-        out_json.push_str("{\n");
-        out_json.push_str(&format!("  \"name\": \"{}\",\n", func_name));
-        out_json.push_str(&format!("  \"line\": {},\n", macro_start_line));
-        out_json.push_str(&format!("  \"generics\": [{}],\n", generics_json));
-        out_json.push_str(&format!("  \"where\": [{}],\n", where_json));
-        out_json.push_str(&format!("  \"parameters\": [{}],\n", params_json));
-        out_json.push_str(&format!("  \"return_type\": \"{}\",\n", return_type));
-        out_json.push_str("  \"callers\": [\n    ");
-        out_json.push_str(&final_callers);
-        out_json.push_str("\n  ]\n}");
+        serde_json::json!({})
+    };
+
+    target_doc["name"] = serde_json::Value::String(func_name);
+    target_doc["line"] = serde_json::json!(macro_start_line);
+    target_doc["generics"] = serde_json::json!(generics);
+    target_doc["where"] = serde_json::json!(traits_list);
+    target_doc["parameters"] = serde_json::json!(parameters);
+    target_doc["return_type"] = serde_json::Value::String(return_type);
+    if target_doc.get("callers").is_none() {
+        target_doc["callers"] = serde_json::Value::Array(Vec::new());
     }
 
-    let _ = std::fs::write(&target_path, out_json);
+    if let Ok(out_json) = serde_json::to_string_pretty(&target_doc) {
+        let _ = std::fs::write(&target_path, out_json);
+    }
 
     item
 }
