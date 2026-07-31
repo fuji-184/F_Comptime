@@ -2310,8 +2310,8 @@ pub fn func(input: TokenStream) -> TokenStream {
                 compute, label, is_str
             ));
             code.push_str(&format!(
-                "    #[cfg(not(test))]\n    fcomptime::comptime_include_expr!({:?}, {{\n{}\n        __fcomptime_v\n    }})\n",
-                label, compute
+                "    #[cfg(not(test))]\n    fcomptime::comptime_include_expr!({:?})\n",
+                label
             ));
         }
         None => {
