@@ -36,3 +36,23 @@ pub fn lib_const_value() -> i32 {
 pub fn token_value() -> i32 {
     call!(token, "lib_data", 0)
 }
+
+pub struct LibGen;
+
+fn lib_impl_helper() -> i32 {
+    25 * 2
+}
+
+#[comptime]
+impl LibGen {
+    pub fn gen_impl() {
+        let v = lib_impl_helper();
+        source! {
+            output!(raw, v, "lib_impl_data");
+        }
+    }
+}
+
+pub fn lib_impl_value() -> i32 {
+    call!("lib_impl_data", 0)
+}

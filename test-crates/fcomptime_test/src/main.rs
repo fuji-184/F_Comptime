@@ -201,12 +201,44 @@ pub fn use_async_output() {
     }
 }
 
+pub struct ImplGen;
+
+fn impl_helper() -> i32 {
+    30 + 12
+}
+
+#[comptime]
+impl ImplGen {
+    pub fn gen_value() {
+        let local = impl_helper();
+        source! {
+            output!(raw, local, "impl_data");
+        }
+    }
+
+    pub fn gen_str(&self) {
+        source! {
+            output!(str, format!("from impl {}", 7), "impl_str");
+        }
+    }
+}
+
+pub fn impl_data_result() -> i32 {
+    call!("impl_data", 0)
+}
+
+pub fn impl_str_result() -> &'static str {
+    call!("impl_str", "")
+}
+
 fn main() {
     assert_eq!(bare_call_result(), 25);
     assert_eq!(token_result(), 25);
     assert_eq!(full_result(), 25);
     assert_eq!(loop_result(), 10);
     assert_eq!(local_result(), 200);
+    assert_eq!(impl_data_result(), 42);
+    assert_eq!(impl_str_result(), "from impl 7");
     let _ = partial_result();
 
     let tes = func!("math", 10);

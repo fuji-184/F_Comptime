@@ -32,7 +32,7 @@ While library like Crabtime solve a similar problem, F_Comptime solves the limit
 | **Dependency** | **Shared dependencies with the main crate** Reuse the same compilation cache of the main crate dependencies. | **Copy dependencies to new separated project** Duplicating compilation artifacts that consumes SSD space. |
 | **Shareable** | **Can share the comptime logic cross project/crate** So that it can be reused with different input. | **Fixed, can't share the compile time logic** Can only share the output. |
 | **Nested** | **Support nested comptime** Can use comptime output inside other comptime. | **Can't use the compile time evaluation output inside other Crabtime macro** |
-| **Impl And Trait Support** | **Trait support** Can use comptime inside trait default methods. `impl` methods are not supported yet (extract into a free function). | **Limited Support** Can only be used in assosiated function |
+| **Impl And Trait Support** | **Impl and Trait support** Can use comptime inside impl blocks and trait default methods. Put `#[comptime]` on the impl block or trait declaration; methods must not have value parameters (only `self`) and the comptime code must not depend on `self`/`Self`/generic parameters of the impl. | **Limited Support** Can only be used in assosiated function |
 | **Parameter Types And Values Info** | **Currently can do some of them** Support for info about normal fn parameter types, normal fn parameter value, generic fn types, and generic fn values. It doesn't support method inside impl block without potential duplicate names and Trait yet. | **Can't know types and values info of fn and generic parameter** |
 
 ## Crates
@@ -292,7 +292,36 @@ trait Trait {
 }
 ```
 
-Note: `#[comptime]` on methods inside `impl` blocks is currently **not supported** and produces a compile error. Extract the computation into a free function (optionally a `#[comptime]` template called with `func!`) instead.
+---
+
+## How to use the comptime in Impl
+
+Place `#[comptime]` above the `impl` block. Every method that contains `source!`/`async_source!` gets its own generated test, exactly like free `#[comptime]` functions — the methods can even be `&self` methods as long as the comptime code does not depend on `self`.
+
+```rust
+#[comptime]
+impl Calculator {
+  fn generate() {
+    let v = helper();
+    source!{
+      output!(raw, v, "impl_output");
+    }
+  }
+
+  fn generate_str(&self) {
+    source!{
+      output!(str, format!("computed {}", 42), "impl_str");
+    }
+  }
+}
+```
+
+Limitations of comptime inside impl blocks:
+
+- the method must not have value parameters (only `self` is allowed) — the generated test cannot capture them; extract into a free `#[comptime]` fn called with `func!` instead
+- the `source!` body and the captured statements before it must not reference `self` (instance state can't exist at compile time) nor `Self` — use the concrete type name or module/associated data instead
+- the impl must not be generic, and the comptime code must not reference the impl's generic parameters (a standalone test cannot resolve `T`)
+- a bare `#[comptime]` on a method inside an impl block is not supported (the generated test module cannot be placed inside an impl block) — put the attribute on the enclosing `impl` block instead
 
 ---
 
@@ -604,6 +633,7 @@ cargo comptime run nested raw
 - `call!` variants: `str in` / `raw in` (let, let mut, const), `full` (with and without default item), `partial` (multi placeholder embedding), `token`, and bare
 - `call_scope!`
 - `func!`: single, multiple and zero parameters, literal/variable/expression arguments, branches, and nested inside another `source!`
+- `#[comptime]` on `impl` blocks: plain and `&self` methods, private module helpers, async via `async_source!`, cross-target access (lib impl consumed by binaries)
 - `#[info]` / `get!`: parameters, generics, callers, and missing-info handling
 - runtime value capture (variables, loops), async via `async_source!`
 - cross-target access: lib outputs consumed by binaries
@@ -618,7 +648,7 @@ Run the full suite (regenerates the `comptime/` outputs, then builds and runs bo
 
 ## Known Limitation
 
-- `#[comptime]` on methods inside `impl` blocks is not supported yet (extract into a free `#[comptime]` function or use a trait)
+- `#[comptime]` inside impl blocks requires the attribute on the `impl` block itself (a bare `#[comptime]` on a method is rejected) — see [How to use the comptime in Impl](#how-to-use-the-comptime-in-impl)
 - `func!` only supports plain `name: type` parameters (no `self`, no destructured patterns) and sync `source!` bodies (`async_source!` inside `func!` is rejected)
 - Calling comptime output inside other comptime as non expression raw token/syntax requires `cargo comptime run nested raw`
 
@@ -627,7 +657,7 @@ Run the full suite (regenerates the `comptime/` outputs, then builds and runs bo
 ## Road Map
 
 - Add F_Comptime support in [R_Lib](https://github.com/fuji-184/RLib)
-- Support `#[comptime]` on methods inside `impl` blocks
 - Support `async_source!` inside `func!`
+- Support bare `#[comptime]` on methods inside `impl` blocks (currently use `#[comptime]` on the impl block)
 
 ---

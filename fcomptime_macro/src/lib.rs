@@ -131,59 +131,269 @@ pub fn comptime(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     let base_line = span.start().line();
+    let item_root = item_tree.root_node();
 
-    let item_fn_name = {
-        let q = Query::new(
-            &tree_sitter_rust::LANGUAGE.into(),
-            "(function_item name: (identifier) @n)",
-        );
-        match q {
-            Ok(q) => {
-                let mut c = QueryCursor::new();
-                let mut m = c.matches(&q, item_tree.root_node(), item_str.as_bytes());
-                m.next().and_then(|mm| mm.captures.first())
-                    .map(|cap| cap.node.utf8_text(item_str.as_bytes()).unwrap_or("").to_string())
-                    .unwrap_or_default()
-            }
-            Err(_) => String::new(),
-        }
+    let has_kind = |kind: &str| -> bool {
+        let Ok(q) = Query::new(&tree_sitter_rust::LANGUAGE.into(), &format!("({}) @i", kind))
+        else {
+            return false;
+        };
+        let mut c = QueryCursor::new();
+        let mut m = c.matches(&q, item_root, item_str.as_bytes());
+        m.next().is_some()
     };
 
-    let is_method = {
-        let mut found = false;
-        if let Ok(q) = Query::new(&tree_sitter_rust::LANGUAGE.into(), "(function_item) @f") {
-            let mut c = QueryCursor::new();
-            let mut m = c.matches(&q, root_node, source_code.as_bytes());
-            while let Some(mm) = m.next() {
-                for cap in mm.captures {
-                    let node = cap.node;
-                    let row = node.start_position().row + 1;
-                    if row.abs_diff(base_line) > 2 {
-                        continue;
+    let root_kind = if has_kind("trait_item") {
+        "trait_item"
+    } else if has_kind("impl_item") {
+        "impl_item"
+    } else if has_kind("function_item") {
+        "function_item"
+    } else {
+        "other"
+    };
+
+    let mut test_mods = String::new();
+    let mut errors: Vec<String> = Vec::new();
+    let mut is_method = false;
+
+    match root_kind {
+        "function_item" => {
+            let item_fn_name = {
+                let q = Query::new(
+                    &tree_sitter_rust::LANGUAGE.into(),
+                    "(function_item name: (identifier) @n)",
+                );
+                match q {
+                    Ok(q) => {
+                        let mut c = QueryCursor::new();
+                        let mut m = c.matches(&q, item_root, item_str.as_bytes());
+                        m.next().and_then(|mm| mm.captures.first())
+                            .map(|cap| cap.node.utf8_text(item_str.as_bytes()).unwrap_or("").to_string())
+                            .unwrap_or_default()
                     }
-                    let name = node
-                        .child_by_field_name("name")
-                        .and_then(|n| n.utf8_text(source_code.as_bytes()).ok())
-                        .unwrap_or("")
-                        .to_string();
-                    if !name.is_empty() && name != item_fn_name {
-                        continue;
-                    }
-                    let mut cur = node.parent();
-                    while let Some(p) = cur {
-                        if p.kind() == "impl_item" {
-                            found = true;
-                            break;
+                    Err(_) => String::new(),
+                }
+            };
+
+            is_method = {
+                let mut found = false;
+                if let Ok(q) = Query::new(&tree_sitter_rust::LANGUAGE.into(), "(function_item) @f") {
+                    let mut c = QueryCursor::new();
+                    let mut m = c.matches(&q, root_node, source_code.as_bytes());
+                    while let Some(mm) = m.next() {
+                        for cap in mm.captures {
+                            let node = cap.node;
+                            let row = node.start_position().row + 1;
+                            if row.abs_diff(base_line) > 2 {
+                                continue;
+                            }
+                            let name = node
+                                .child_by_field_name("name")
+                                .and_then(|n| n.utf8_text(source_code.as_bytes()).ok())
+                                .unwrap_or("")
+                                .to_string();
+                            if !name.is_empty() && name != item_fn_name {
+                                continue;
+                            }
+                            let mut cur = node.parent();
+                            while let Some(p) = cur {
+                                if p.kind() == "impl_item" {
+                                    found = true;
+                                    break;
+                                }
+                                cur = p.parent();
+                            }
                         }
-                        cur = p.parent();
                     }
+                }
+                found
+            };
+
+            if is_method {
+                errors.push(
+                    "comptime: #[comptime] on an impl method is not supported directly (the \
+                     generated test module cannot be placed inside an impl block); put #[comptime] \
+                     on the enclosing impl block instead, e.g. `#[comptime] impl Foo { ... }`, and \
+                     keep the method free of value parameters (only `self` is allowed)"
+                        .to_string(),
+                );
+            } else {
+                let (mods, errs) = build_test_for_fn(
+                    &item_str,
+                    base_line + 1,
+                    &source_code,
+                    root_node,
+                    &item_fn_name,
+                    ParamPolicy::Skip,
+                    &[],
+                    false,
+                );
+                test_mods.push_str(&mods);
+                errors.extend(errs);
+            }
+        }
+        "impl_item" | "trait_item" => {
+            if let Some(container_node) =
+                find_kind_node(item_root, item_str.as_bytes(), root_kind)
+            {
+                let start_row =
+                    find_container_start_row(root_node, &source_code, base_line, root_kind);
+                let generics = container_generics(&item_str, container_node);
+                for method in direct_functions(container_node) {
+                    let Ok(method_text) = method.utf8_text(item_str.as_bytes()) else {
+                        continue;
+                    };
+                    let method_name = fn_name_of(method, item_str.as_bytes());
+                    let method_line = start_row
+                        .map(|r| r + method.start_position().row + 1)
+                        .unwrap_or(base_line + 2 + method.start_position().row);
+                    let (mods, errs) = build_test_for_fn(
+                        &method_text.to_string(),
+                        method_line,
+                        &source_code,
+                        root_node,
+                        &method_name,
+                        ParamPolicy::ErrorIfNonSelf,
+                        &generics,
+                        true,
+                    );
+                    test_mods.push_str(&mods);
+                    errors.extend(errs);
                 }
             }
         }
-        found
-    };
+        _ => {}
+    }
 
-    let (fn_params, _fn_bindable) = fn_params_and_bindable(&item_str, item_tree.root_node());
+    let mut output = if is_method {
+        TokenStream::new()
+    } else {
+        rerun_token
+    };
+    output.extend(item);
+    let test_tokens: TokenStream = test_mods.parse().unwrap_or_else(|_| TokenStream::new());
+    output.extend(test_tokens);
+    for e in &errors {
+        let msg = format!("compile_error!({:?});", e);
+        if let Ok(ts) = msg.parse::<TokenStream>() {
+            output.extend(ts);
+        }
+    }
+    output
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum ParamPolicy {
+    Skip,
+    ErrorIfNonSelf,
+}
+
+fn find_kind_node<'a>(root: Node<'a>, src: &'a [u8], kind: &str) -> Option<Node<'a>> {
+    let Ok(q) = Query::new(&tree_sitter_rust::LANGUAGE.into(), &format!("({}) @i", kind)) else {
+        return None;
+    };
+    let mut qc = QueryCursor::new();
+    let mut qm = qc.matches(&q, root, src);
+    qm.next().and_then(|m| m.captures.first()).map(|cap| cap.node)
+}
+
+fn direct_functions(container_root: Node) -> Vec<Node> {
+    let mut out = Vec::new();
+    let mut c = container_root.walk();
+    for child in container_root.children(&mut c) {
+        if child.kind() != "declaration_list" {
+            continue;
+        }
+        let mut cc = child.walk();
+        for item in child.children(&mut cc) {
+            if item.kind() == "function_item" {
+                out.push(item);
+            }
+        }
+    }
+    out
+}
+
+fn fn_name_of(node: Node, src: &[u8]) -> String {
+    node.child_by_field_name("name")
+        .and_then(|n| n.utf8_text(src).ok())
+        .unwrap_or("")
+        .trim()
+        .to_string()
+}
+
+fn container_generics(item_str: &str, container_root: Node) -> Vec<String> {
+    let mut out = Vec::new();
+    let Some(tp) = container_root.child_by_field_name("type_parameters") else {
+        return out;
+    };
+    let mut c = tp.walk();
+    for child in tp.children(&mut c) {
+        if child.kind() != "type_parameter" && child.kind() != "constrained_type_parameter" {
+            continue;
+        }
+        if let Some(id) = child.child_by_field_name("name") {
+            if let Ok(t) = id.utf8_text(item_str.as_bytes()) {
+                let t = t.trim().to_string();
+                if !t.is_empty() && !out.contains(&t) {
+                    out.push(t);
+                }
+            }
+        }
+    }
+    out
+}
+
+fn find_container_start_row(
+    file_root: Node,
+    source_code: &str,
+    base_line: usize,
+    kind: &str,
+) -> Option<usize> {
+    let Ok(q) = Query::new(&tree_sitter_rust::LANGUAGE.into(), &format!("({}) @c", kind)) else {
+        return None;
+    };
+    let mut qc = QueryCursor::new();
+    let mut qm = qc.matches(&q, file_root, source_code.as_bytes());
+    let mut best: Option<(usize, usize)> = None;
+    while let Some(mm) = qm.next() {
+        for cap in mm.captures {
+            let line = cap.node.start_position().row + 1;
+            if line.abs_diff(base_line) > 3 {
+                continue;
+            }
+            let dist = line.abs_diff(base_line);
+            let better = match best {
+                Some((bd, bl)) => dist < bd || (dist == bd && line > bl),
+                None => true,
+            };
+            if better {
+                best = Some((dist, cap.node.start_position().row));
+            }
+        }
+    }
+    best.map(|(_, row)| row)
+}
+
+fn build_test_for_fn(
+    item_str: &str,
+    fn_line: usize,
+    source_code: &str,
+    root_node: Node,
+    fn_name: &str,
+    policy: ParamPolicy,
+    container_generics: &[String],
+    check_self_type: bool,
+) -> (String, Vec<String>) {
+    let mut parser = Parser::new();
+    parser.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
+    let Some(item_tree) = parser.parse(item_str, None) else {
+        return (String::new(), Vec::new());
+    };
+    let item_root = item_tree.root_node();
+
+    let (fn_params, _fn_bindable) = fn_params_and_bindable(item_str, item_root);
 
     let body_block = {
         let q = Query::new(
@@ -193,12 +403,34 @@ pub fn comptime(attr: TokenStream, item: TokenStream) -> TokenStream {
         match q {
             Ok(q) => {
                 let mut c = QueryCursor::new();
-                let mut m = c.matches(&q, item_tree.root_node(), item_str.as_bytes());
+                let mut m = c.matches(&q, item_root, item_str.as_bytes());
                 m.next().and_then(|mm| mm.captures.first()).map(|cap| cap.node)
             }
             Err(_) => None,
         }
     };
+
+    let Some(body_block) = body_block else {
+        return (String::new(), Vec::new());
+    };
+
+    let mut all_generics: Vec<String> = container_generics.to_vec();
+    if let Some(tp) = item_root.child_by_field_name("type_parameters") {
+        let mut c = tp.walk();
+        for child in tp.children(&mut c) {
+            if child.kind() != "type_parameter" && child.kind() != "constrained_type_parameter" {
+                continue;
+            }
+            if let Some(id) = child.child_by_field_name("name") {
+                if let Ok(t) = id.utf8_text(item_str.as_bytes()) {
+                    let t = t.trim().to_string();
+                    if !t.is_empty() && !all_generics.contains(&t) {
+                        all_generics.push(t);
+                    }
+                }
+            }
+        }
+    }
 
     let query_macro = Query::new(
         &tree_sitter_rust::LANGUAGE.into(),
@@ -207,19 +439,11 @@ pub fn comptime(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let mut macro_cursor = QueryCursor::new();
     let mut macro_matches =
-        macro_cursor.matches(&query_macro, item_tree.root_node(), item_str.as_bytes());
+        macro_cursor.matches(&query_macro, item_root, item_str.as_bytes());
 
     let mut test_mods = String::new();
     let mut errors: Vec<String> = Vec::new();
-
-    if is_method {
-        errors.push(
-            "comptime: #[comptime] on impl methods is not supported (the generated test module \
-             cannot be placed inside an impl block); extract the computation into a free fn and \
-             call it from the method"
-                .to_string(),
-        );
-    }
+    let mut param_err_pushed = false;
 
     while let Some(m) = macro_matches.next() {
         let mut macro_name = "";
@@ -240,12 +464,26 @@ pub fn comptime(attr: TokenStream, item: TokenStream) -> TokenStream {
             continue;
         }
 
-        if is_method {
-            continue;
-        }
-
-        if !fn_params.is_empty() {
-            continue;
+        match policy {
+            ParamPolicy::Skip => {
+                if !fn_params.is_empty() {
+                    continue;
+                }
+            }
+            ParamPolicy::ErrorIfNonSelf => {
+                if fn_params.iter().any(|p| p != "self") {
+                    if !param_err_pushed {
+                        errors.push(format!(
+                            "comptime: method '{}' has value parameters (only `self` is allowed); \
+                             the generated test cannot capture them — extract the computation into \
+                             a free #[comptime] fn called with func!, or remove the parameters",
+                            fn_name
+                        ));
+                        param_err_pushed = true;
+                    }
+                    continue;
+                }
+            }
         }
 
         let body_node = match body_node {
@@ -254,17 +492,17 @@ pub fn comptime(attr: TokenStream, item: TokenStream) -> TokenStream {
         };
 
         let m_node = macro_node.unwrap();
-        
+
         let macro_relative_row = m_node.start_position().row;
 
-        let expected_line = base_line + 1 + macro_relative_row;
+        let expected_line = fn_line + macro_relative_row;
         let mut call_line = expected_line;
         let mut best_dist = usize::MAX;
 
         for (i, line) in source_code
             .lines()
             .enumerate()
-            .skip(base_line.saturating_sub(1))
+            .skip(fn_line.saturating_sub(1))
             .take(macro_relative_row + 8)
         {
             if line.contains(&format!("{}!", macro_name)) {
@@ -344,41 +582,75 @@ pub fn comptime(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
 
-        let item_call_byte = match body_block {
-            Some(bb) => {
-                let mut cur = m_node;
-                loop {
-                    match cur.parent() {
-                        Some(p) if p.id() == bb.id() => break Some((cur.start_byte(), cur.end_byte())),
-                        Some(p) => cur = p,
-                        None => break None,
-                    }
+        let item_call_byte = {
+            let mut cur = m_node;
+            loop {
+                match cur.parent() {
+                    Some(p) if p.id() == body_block.id() => break Some((cur.start_byte(), cur.end_byte())),
+                    Some(p) => cur = p,
+                    None => break None,
                 }
             }
-            None => None,
         };
 
         let mut call_errors: Vec<String> = Vec::new();
 
-        if let Some(bb) = body_block {
-            if let Err(e) = check_source_at_fn_top(m_node, bb) {
-                call_errors.push(e);
-            }
+        if let Err(e) = check_source_at_fn_top(m_node, body_block) {
+            call_errors.push(e);
         }
 
-        let prefix_text = fn_prefix_text(&item_str, body_block, item_call_byte.map(|(s, _)| s));
+        let prefix_text = fn_prefix_text(item_str, Some(body_block), item_call_byte.map(|(s, _)| s));
         let prefix_bound = bound_names_in_str(&prefix_text);
 
         if has_self_in_str(&body_only) || has_self_in_str(&prefix_text) {
-            call_errors.push(format!(
-                "comptime error (line {}): source! body or captured prefix references `self`; \
-                 `self` cannot be captured at compile time — extract the needed fields into locals \
-                 before source!, e.g. `let x = self.x;`",
-                call_line
-            ));
+            if check_self_type {
+                call_errors.push(format!(
+                    "comptime error (line {}): source! body or captured prefix references \
+                     `self`; instance state cannot be captured at compile time — comptime code \
+                     of an impl method must not depend on `self`, use module/associated data \
+                     instead, or extract the computation into a free #[comptime] fn called with \
+                     func!",
+                    call_line
+                ));
+            } else {
+                call_errors.push(format!(
+                    "comptime error (line {}): source! body or captured prefix references `self`; \
+                     `self` cannot be captured at compile time — extract the needed fields into \
+                     locals before source!, e.g. `let x = self.x;`",
+                    call_line
+                ));
+            }
         }
 
-        let after_names = names_bound_after(&item_str, body_block, item_call_byte.map(|(_, e)| e));
+        if check_self_type {
+            if has_self_type_in_str(&body_only) || has_self_type_in_str(&prefix_text) {
+                call_errors.push(format!(
+                    "comptime error (line {}): source! body or captured prefix references `Self`; \
+                     `Self` cannot be resolved inside the generated test — use the concrete type \
+                     name instead, or extract the values into locals before source!",
+                    call_line
+                ));
+            }
+        }
+
+        if !all_generics.is_empty() {
+            let code = format!("{}\n{}", prefix_text, body_only);
+            let idents = identifiers_in_str(&code);
+            let bound = bound_names_in_str(&code);
+            for g in &all_generics {
+                if idents.iter().any(|i| i == g) && !bound.contains(g) {
+                    call_errors.push(format!(
+                        "comptime error (line {}): source! body or captured prefix references \
+                         generic parameter `{}` of the enclosing item; the generated test cannot \
+                         resolve it",
+                        call_line, g
+                    ));
+                    break;
+                }
+            }
+        }
+
+        let after_names = names_bound_after(item_str, Some(body_block), item_call_byte.map(|(_, e)| e));
         for t in &targets {
             if after_names.contains(t) && !prefix_bound.contains(t) {
                 call_errors.push(format!(
@@ -429,21 +701,12 @@ pub fn comptime(attr: TokenStream, item: TokenStream) -> TokenStream {
         test_mods.push_str(&test_mod);
     }
 
-    let mut output = if is_method {
-        TokenStream::new()
-    } else {
-        rerun_token
-    };
-    output.extend(item);
-    let test_tokens: TokenStream = test_mods.parse().unwrap_or_else(|_| TokenStream::new());
-    output.extend(test_tokens);
-    for e in &errors {
-        let msg = format!("compile_error!({:?});", e);
-        if let Ok(ts) = msg.parse::<TokenStream>() {
-            output.extend(ts);
-        }
-    }
-    output
+    (test_mods, errors)
+}
+
+fn has_self_type_in_str(text: &str) -> bool {
+    text.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .any(|t| t == "Self")
 }
 
 fn split_top_level(s: &str, sep: char) -> Vec<String> {
@@ -608,7 +871,10 @@ fn identifiers_in_str(text: &str) -> Vec<String> {
     let Some(tree) = p.parse(text, None) else {
         return out;
     };
-    let Ok(q) = Query::new(&tree_sitter_rust::LANGUAGE.into(), "(identifier) @name") else {
+    let Ok(q) = Query::new(
+        &tree_sitter_rust::LANGUAGE.into(),
+        "[(identifier) (type_identifier)] @name",
+    ) else {
         return out;
     };
     let mut qc = QueryCursor::new();
