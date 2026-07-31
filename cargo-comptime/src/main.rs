@@ -19,23 +19,6 @@ fn print_usage() {
     eprintln!("  -h, --help    Show this help message");
 }
 
-fn run_filtered(args: &[&str]) -> bool {
-    let output = Command::new("cargo")
-        .args(args)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .env("CARGO_TERM_COLOR", "never")
-        .env("CARGO_TERM_QUIET", "true")
-        .output()
-        .expect("Failed to spawn cargo");
-
-    if !output.status.success() {
-        eprint!("{}", String::from_utf8_lossy(&output.stderr));
-        return false;
-    }
-    true
-}
-
 fn latest_src_mtime() -> u64 {
     let mut latest = 0u64;
     let mut stack = vec!["src".to_string()];
@@ -205,10 +188,6 @@ fn run_cargo_test_nested_raw() {
             .output()
             .expect("Failed to execute test binary");
 
-       /* if run_output.status.success() {
-            break;
-        }*/
-
         let stderr_str = String::from_utf8_lossy(&run_output.stderr);
         let stdout_str = String::from_utf8_lossy(&run_output.stdout);
 
@@ -217,13 +196,14 @@ fn run_cargo_test_nested_raw() {
         {
             std::thread::sleep(std::time::Duration::from_millis(1));
             continue;
-        } else {
-          break;
         }
 
-        eprint!("{}", stdout_str);
-        eprint!("{}", stderr_str);
-        exit(1);
+        if !run_output.status.success() {
+            eprint!("{}", stdout_str);
+            eprint!("{}", stderr_str);
+            exit(1);
+        }
+        break;
     }
     
     let output = Command::new("cargo")
@@ -274,10 +254,6 @@ fn run_cargo_test_nested_raw() {
             .output()
             .expect("Failed to execute test binary");
 
-       /* if run_output.status.success() {
-            break;
-        }*/
-
         let stderr_str = String::from_utf8_lossy(&run_output.stderr);
         let stdout_str = String::from_utf8_lossy(&run_output.stdout);
         
@@ -290,13 +266,14 @@ fn run_cargo_test_nested_raw() {
         {
             std::thread::sleep(std::time::Duration::from_millis(1));
             continue;
-        } else {
-          break;
         }
 
-        eprint!("{}", stdout_str);
-        eprint!("{}", stderr_str);
-        exit(1);
+        if !run_output.status.success() {
+            eprint!("{}", stdout_str);
+            eprint!("{}", stderr_str);
+            exit(1);
+        }
+        break;
     }
 
     save_test_timestamp();

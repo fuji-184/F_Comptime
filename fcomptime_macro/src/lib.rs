@@ -7,7 +7,6 @@ use proc_macro::TokenStream;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tree_sitter::{Parser, Query, QueryCursor, StreamingIterator};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 
@@ -58,20 +57,22 @@ fn build_rerun_token(path: &Path, source: &str) -> TokenStream {
     }
     #[cfg(not(feature = "nightly"))]
     {
-        let mtime = fs::metadata(path)
+        use std::hash::{Hash, Hasher};
+
+        let mtime_nanos = fs::metadata(path)
             .and_then(|m| m.modified())
             .map(|t| {
                 t.duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
-                    .as_secs()
+                    .as_nanos() as u64
             })
             .unwrap_or(0);
 
-        let content_hash = source.bytes().fold(0u32, |acc, b| {
-            acc.wrapping_mul(31).wrapping_add(b as u32)
-        });
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        source.hash(&mut hasher);
+        let content_hash = hasher.finish();
 
-        format!("const _: (u64, u32) = ({}, {});", mtime, content_hash)
+        format!("const _: (u64, u64) = ({}, {});", mtime_nanos, content_hash)
             .parse()
             .unwrap_or_else(|_| TokenStream::new())
     }
@@ -149,24 +150,33 @@ pub fn comptime(attr: TokenStream, item: TokenStream) -> TokenStream {
         let m_node = macro_node.unwrap();
         
         let macro_relative_row = m_node.start_position().row;
-        let mut call_line = base_line + macro_relative_row;
 
-        if let Some(actual_line) = source_code.lines()
+        let expected_line = base_line + 1 + macro_relative_row;
+        let mut call_line = expected_line;
+        let mut best_dist = usize::MAX;
+
+        for (i, line) in source_code
+            .lines()
             .enumerate()
-            .skip(base_line.saturating_sub(2)) 
-            .take(macro_relative_row + 10)
-            .find(|(_, line)| line.contains(&format!("{}!", macro_name)))
-            .map(|(i, _)| i + 1) 
+            .skip(base_line.saturating_sub(1))
+            .take(macro_relative_row + 8)
         {
-            call_line = actual_line;
+            if line.contains(&format!("{}!", macro_name)) {
+                let l = i + 1;
+                let d = l.abs_diff(expected_line);
+                if d < best_dist {
+                    best_dist = d;
+                    call_line = l;
+                }
+            }
         }
 
         let body_text = body_node.utf8_text(item_str.as_bytes()).unwrap_or("").to_string();
-        let mut body_lines = body_text.lines().collect::<Vec<&str>>();
-        if body_lines.len() >= 2 {
-            body_lines.remove(0);
-            body_lines.pop();
-        }
+        let inner = match (body_text.find('{'), body_text.rfind('}')) {
+            (Some(s), Some(e)) if e > s => &body_text[s + 1..e],
+            _ => body_text.as_str(),
+        };
+        let body_lines = inner.lines().collect::<Vec<&str>>();
 
         let mut targets: Vec<String> = Vec::new();
         {
@@ -179,8 +189,35 @@ pub fn comptime(attr: TokenStream, item: TokenStream) -> TokenStream {
             let mut qm = qc.matches(&q, btree.root_node(), body_only.as_bytes());
             while let Some(mm) = qm.next() {
                 for cap in mm.captures {
-                    let name = cap.node.utf8_text(body_only.as_bytes()).unwrap_or("").to_string();
-                    if name != "println" && !targets.contains(&name) {
+                    let node = cap.node;
+                    let mut skip = false;
+                    if let Some(par) = node.parent() {
+                        match par.kind() {
+                            "call_expression" | "generic_function" => {
+                                if let Some(f) = par.child_by_field_name("function") {
+                                    if f == node {
+                                        skip = true;
+                                    }
+                                }
+                            }
+                            "field_expression" => {
+                                if let Some(f) = par.child_by_field_name("field") {
+                                    if f == node {
+                                        skip = true;
+                                    }
+                                }
+                            }
+                            "macro_invocation" => {
+                                skip = true;
+                            }
+                            _ => {}
+                        }
+                    }
+                    if skip {
+                        continue;
+                    }
+                    let name = node.utf8_text(body_only.as_bytes()).unwrap_or("").to_string();
+                    if !is_framework_name(&name) && !targets.contains(&name) {
                         targets.push(name);
                     }
                 }
@@ -258,9 +295,8 @@ pub fn comptime(attr: TokenStream, item: TokenStream) -> TokenStream {
             if byte_start >= macro_call_byte {
                 continue;
             }
-            let left_text = left.utf8_text(source_code.as_bytes()).unwrap_or("").to_string();
-            let root_name = left_text.split('.').next().unwrap_or("").trim().to_string();
-            if root_name.is_empty() || !targets.contains(&root_name) {
+            let left_text = root_identifier(left, source_code.as_bytes());
+            if left_text.is_empty() || left_text == "self" || !targets.contains(&left_text) {
                 continue;
             }
             if all_entries.iter().any(|(b, _)| *b == byte_start) {
@@ -293,10 +329,10 @@ pub fn comptime(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
 
-        let test_fn_name = format!("comptime_line_{}", call_line);
+        let test_fn_name = format!("comptime_line_{}_{}", call_line, macro_relative_row);
         let test_mod = if macro_name == "async_source" {
             format!(
-                "#[cfg(test)]\nmod {} {{\n    use super::*;\n    #[tokio::test]\n    async fn run() {{\n{}{}}}\n}}\n",
+                "#[cfg(test)]\nmod {} {{\n    use super::*;\n    use fcomptime::tokio as tokio;\n    #[tokio::test]\n    async fn run() {{\n{}{}}}\n}}\n",
                 test_fn_name,
                 found_definitions,
                 extracted_body,
@@ -317,6 +353,37 @@ pub fn comptime(attr: TokenStream, item: TokenStream) -> TokenStream {
     let test_tokens: TokenStream = test_mods.parse().unwrap_or_else(|_| TokenStream::new());
     output.extend(test_tokens);
     output
+}
+
+fn is_framework_name(name: &str) -> bool {
+    matches!(
+        name,
+        "source"
+            | "async_source"
+            | "output"
+            | "call"
+            | "call_scope"
+            | "println"
+            | "print"
+            | "eprintln"
+            | "eprint"
+            | "panic"
+            | "dbg"
+            | "assert"
+            | "assert_eq"
+            | "assert_ne"
+            | "assert_neq"
+    )
+}
+
+fn root_identifier(node: tree_sitter::Node, src: &[u8]) -> String {
+    if node.kind() == "identifier" {
+        return node.utf8_text(src).unwrap_or("").trim().to_string();
+    }
+    if let Some(child) = node.child(0) {
+        return root_identifier(child, src);
+    }
+    node.utf8_text(src).unwrap_or("").trim().to_string()
 }
 
 fn extract_names_from_pattern(node: tree_sitter::Node, src: &[u8]) -> Vec<String> {
@@ -358,7 +425,7 @@ fn find_statement_parent(node: tree_sitter::Node) -> tree_sitter::Node {
 
 fn byte_offset_of_line(source: &str, target_line: usize) -> usize {
     let mut offset = 0;
-    for (i, line) in source.lines().enumerate() {
+    for (i, line) in source.split('\n').enumerate() {
         if i + 1 == target_line {
             return offset;
         }
@@ -370,6 +437,15 @@ fn byte_offset_of_line(source: &str, target_line: usize) -> usize {
 #[cfg(not(feature = "nightly"))]
 fn find_file_by_line(base_dir: &Path, target_line: usize) -> Option<PathBuf> {
     let mut dirs = vec![base_dir.to_path_buf()];
+    for extra in ["tests", "examples", "benches"] {
+        let p = base_dir.join(extra);
+        if p.is_dir() {
+            dirs.push(p);
+        }
+    }
+
+    let mut candidates: Vec<(PathBuf, usize)> = Vec::new();
+
     while let Some(dir) = dirs.pop() {
         if let Ok(entries) = fs::read_dir(dir) {
             for entry in entries.flatten() {
@@ -381,24 +457,37 @@ fn find_file_by_line(base_dir: &Path, target_line: usize) -> Option<PathBuf> {
                     && !path.to_str().unwrap_or("").contains("_comptime.rs")
                 {
                     if let Ok(content) = fs::read_to_string(&path) {
-                        if content.contains("source!")
-                            && content.lines().count() >= target_line
-                        {
-                            return Some(path);
+                        let has_macro =
+                            content.contains("source!") || content.contains("async_source!");
+                        if has_macro && content.lines().count() >= target_line {
+                            let dist = content
+                                .lines()
+                                .enumerate()
+                                .filter(|(_, l)| {
+                                    l.trim_start().starts_with("#[") && l.contains("comptime")
+                                })
+                                .map(|(i, _)| target_line.saturating_sub(i + 1))
+                                .min()
+                                .unwrap_or(usize::MAX);
+                            candidates.push((path, dist));
                         }
                     }
                 }
             }
         }
     }
-    None
+
+    candidates.sort_by_key(|(_, d)| *d);
+    candidates.first().map(|(p, _)| p.clone())
 }
 
 #[proc_macro]
 pub fn comptime_token(input: TokenStream) -> TokenStream {
     let name = input.to_string();
     let name = name.trim().trim_matches('"');
-    let path = format!("./comptime/{}", name);
+    let path = PathBuf::from(get_env_var("CARGO_MANIFEST_DIR"))
+        .join("comptime")
+        .join(name);
 
     #[cfg(feature = "nightly")]
     proc_macro::tracked_path::path(&path);
@@ -415,31 +504,38 @@ pub fn comptime_token(input: TokenStream) -> TokenStream {
         .unwrap_or_else(|_| panic!("failed to parse comptime file '{}'", name))
 }
 
-fn replace_placeholder(source: &str, placeholder: &str, value: &str) -> String {
-    let mut result = String::new();
-    let mut idx = 0;
-    let ph_len = placeholder.len();
+fn replace_placeholders(source: &str, parts: &[&str]) -> String {
+    let mut result = String::with_capacity(source.len());
+    let chars: Vec<char> = source.chars().collect();
+    let mut i = 0;
 
-    while idx < source.len() {
-        if source[idx..].starts_with(placeholder) {
-            let after = source[idx + ph_len..].chars().next();
-            let after_ok = match after {
-                None => true,
-                Some(c) => !c.is_ascii_digit(),
-            };
-
-            if after_ok {
-                result.push_str(value);
-                idx += ph_len;
-            } else {
-                result.push(source[idx..].chars().next().unwrap());
-                idx += source[idx..].chars().next().unwrap().len_utf8();
+    while i < chars.len() {
+        if chars[i] == '#' {
+            let mut done = false;
+            for k in (1..=parts.len()).rev() {
+                let ph: Vec<char> = format!("#{}", k).chars().collect();
+                if chars.len() - i >= ph.len() && &chars[i..i + ph.len()] == &ph[..] {
+                    let after_ok = chars
+                        .get(i + ph.len())
+                        .map_or(true, |c| !c.is_ascii_digit());
+                    if after_ok {
+                        result.push_str(parts[k - 1]);
+                        i += ph.len();
+                        done = true;
+                        break;
+                    }
+                }
+            }
+            if !done {
+                result.push('#');
+                i += 1;
             }
         } else {
-            result.push(source[idx..].chars().next().unwrap());
-            idx += source[idx..].chars().next().unwrap().len_utf8();
+            result.push(chars[i]);
+            i += 1;
         }
     }
+
     result
 }
 
@@ -456,7 +552,9 @@ pub fn comptime_type(input: TokenStream) -> TokenStream {
     let name_part = input_str[..comma_idx].trim().trim_matches('"');
     let item_part = input_str[comma_idx + 1..].trim();
     
-    let path = format!("./comptime/{}", name_part);
+    let path = PathBuf::from(get_env_var("CARGO_MANIFEST_DIR"))
+        .join("comptime")
+        .join(name_part);
 
     #[cfg(feature = "nightly")]
     proc_macro::tracked_path::path(&path);
@@ -471,43 +569,26 @@ pub fn comptime_type(input: TokenStream) -> TokenStream {
 
     let parts: Vec<&str> = content.trim().split(',').collect();
 
-    let mut result = item_part.to_string();
-    for (i, part) in parts.iter().enumerate().rev() {
-        let placeholder = format!("#{}", i + 1);
-        result = replace_placeholder(&result, &placeholder, part.trim());
-    }
+    let result = replace_placeholders(item_part, &parts);
 
     result.parse().unwrap_or_else(|_| TokenStream::new())
 }
 
-static INITIALIZED: AtomicBool = AtomicBool::new(false);
 static FILE_LOCK: Mutex<()> = Mutex::new(());
 
 #[proc_macro_attribute]
 pub fn info(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let item_str = item.to_string();
     let macro_start_line = proc_macro::Span::call_site().start().line();
-    let _guard = FILE_LOCK.lock().unwrap();
+    let _guard = FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    let comptime_dir = PathBuf::from(get_env_var("CARGO_MANIFEST_DIR")).join("comptime");
+    let _ = std::fs::create_dir_all(&comptime_dir);
 
     let mut parser = Parser::new();
     parser.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
     let tree = parser.parse(&item_str, None).unwrap();
     let root_node = tree.root_node();
-
-    let _ = std::fs::create_dir_all("./comptime");
-
-    if !INITIALIZED.load(Ordering::SeqCst) {
-        if let Ok(entries) = std::fs::read_dir("./comptime") {
-            for entry in entries.flatten() {
-                if let Ok(file_type) = entry.file_type() {
-                    if file_type.is_file() && entry.file_name().to_string_lossy().ends_with(".json") {
-                        let _ = std::fs::remove_file(entry.path());
-                    }
-                }
-            }
-        }
-        INITIALIZED.store(true, Ordering::SeqCst);
-    }
 
     let func_query = Query::new(
         &tree_sitter_rust::LANGUAGE.into(),
@@ -698,8 +779,8 @@ pub fn info(_attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 
     for (t_func, mut callers) in detected_callers {
-        let path = format!("./comptime/{}.json", t_func);
-        let mut doc: serde_json::Value = if std::path::Path::new(&path).exists() {
+        let path = comptime_dir.join(format!("{}.json", t_func));
+        let mut doc: serde_json::Value = if path.exists() {
             std::fs::read_to_string(&path)
                 .ok()
                 .and_then(|c| serde_json::from_str(&c).ok())
@@ -719,7 +800,11 @@ pub fn info(_attr: TokenStream, item: TokenStream) -> TokenStream {
         }
 
         if let Some(existing_callers) = doc["callers"].as_array_mut() {
-            existing_callers.append(&mut callers);
+            for caller in &mut callers {
+                if !existing_callers.contains(caller) {
+                    existing_callers.push(caller.take());
+                }
+            }
         }
 
         if let Ok(out_json) = serde_json::to_string_pretty(&doc) {
@@ -727,7 +812,7 @@ pub fn info(_attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     }
 
-    let target_path = format!("./comptime/{}.json", func_name);
+    let target_path = comptime_dir.join(format!("{}.json", func_name));
     let mut target_doc: serde_json::Value = if std::path::Path::new(&target_path).exists() {
         std::fs::read_to_string(&target_path)
             .ok()
@@ -752,4 +837,40 @@ pub fn info(_attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 
     item
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn placeholder_basic_and_double_digit() {
+        let parts = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"];
+        assert_eq!(replace_placeholders("#1 + #2", &parts), "a + b");
+        assert_eq!(replace_placeholders("#10 and #2", &parts), "j and b");
+        assert_eq!(replace_placeholders("#12", &parts), "l");
+        assert_eq!(replace_placeholders("(#1, #10, #11)", &parts), "(a, j, k)");
+    }
+
+    #[test]
+    fn placeholder_respects_digit_boundary() {
+        let parts = ["a", "b"];
+        assert_eq!(replace_placeholders("#12", &parts), "#12");
+        assert_eq!(replace_placeholders("x#1y", &parts), "xay");
+    }
+
+    #[test]
+    fn byte_offset_crlf() {
+        let src = "a\r\nbb\r\nccc";
+        assert_eq!(byte_offset_of_line(src, 1), 0);
+        assert_eq!(byte_offset_of_line(src, 2), 3);
+        assert_eq!(byte_offset_of_line(src, 3), 7);
+    }
+
+    #[test]
+    fn byte_offset_lf() {
+        let src = "a\nbb\nccc";
+        assert_eq!(byte_offset_of_line(src, 1), 0);
+        assert_eq!(byte_offset_of_line(src, 2), 2);
+        assert_eq!(byte_offset_of_line(src, 3), 5);
+    }
 }

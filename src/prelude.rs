@@ -9,3 +9,6 @@ pub use crate::{
     info,
     get
 };
+
+#[cfg(feature = "async")]
+pub use crate::async_source;

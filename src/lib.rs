@@ -58,12 +58,13 @@ impl fmt::Debug for TraceError {
         let caller_file = self.file;
         let caller_line = self.line.to_string();
 
+        let mut printed = false;
+        let mut fallback: Option<String> = None;
+
         while let Some(_func) = lines.next() {
             if let Some(loc) = lines.next() {
                 let l = loc.trim();
 
-                if self.caller {
-                  
                 if l.contains("src/")
                     && !l.contains("/rustc/")
                     && !l.contains("core/")
@@ -71,18 +72,29 @@ impl fmt::Debug for TraceError {
                     && !l.contains("test/")
                     && !l.contains("FTest")
                 {
+                    if fallback.is_none() {
+                        fallback = Some(l.to_string());
+                    }
                     if !(l.contains(caller_file) && l.contains(&caller_line)) {
                         if let Some(loc) = l.strip_prefix("at ") {
-                          writeln!(f, "Caller: {}{}{}", GREEN, loc, RESET)?;
+                            writeln!(f, "Caller: {}{}{}", GREEN, loc, RESET)?;
                         } else {
-                          writeln!(f, "Caller: {}{}{}", GREEN, l, RESET)?;
+                            writeln!(f, "Caller: {}{}{}", GREEN, l, RESET)?;
                         }
+                        printed = true;
                         break;
                     }
                 }
-                
+            }
+        }
+
+        if !printed {
+            if let Some(l) = fallback {
+                if let Some(loc) = l.strip_prefix("at ") {
+                    writeln!(f, "Caller: {}{}{}", GREEN, loc, RESET)?;
+                } else {
+                    writeln!(f, "Caller: {}{}{}", GREEN, l, RESET)?;
                 }
-                
             }
         }
 
@@ -96,6 +108,54 @@ impl From<Box<dyn std::error::Error>> for TraceError {
         let loc = std::panic::Location::caller();
         Self {
             inner: err,
+            file: loc.file(),
+            line: loc.line(),
+            column: loc.column(),
+            backtrace: Backtrace::capture(),
+            caller: true,
+            caller_thread: std::thread::current().id()
+        }
+    }
+}
+
+impl From<String> for TraceError {
+    #[track_caller]
+    fn from(err: String) -> Self {
+        let loc = std::panic::Location::caller();
+        Self {
+            inner: err.into(),
+            file: loc.file(),
+            line: loc.line(),
+            column: loc.column(),
+            backtrace: Backtrace::capture(),
+            caller: true,
+            caller_thread: std::thread::current().id()
+        }
+    }
+}
+
+impl From<std::io::Error> for TraceError {
+    #[track_caller]
+    fn from(err: std::io::Error) -> Self {
+        let loc = std::panic::Location::caller();
+        Self {
+            inner: Box::new(err),
+            file: loc.file(),
+            line: loc.line(),
+            column: loc.column(),
+            backtrace: Backtrace::capture(),
+            caller: true,
+            caller_thread: std::thread::current().id()
+        }
+    }
+}
+
+impl From<serde_json::Error> for TraceError {
+    #[track_caller]
+    fn from(err: serde_json::Error) -> Self {
+        let loc = std::panic::Location::caller();
+        Self {
+            inner: Box::new(err),
             file: loc.file(),
             line: loc.line(),
             column: loc.column(),
@@ -124,39 +184,79 @@ impl From<&str> for TraceError {
 
 #[macro_export]
 macro_rules! init_comptime {
-    () => {
-        #[cfg(test)]
-        pub(crate) static comptime_NAMES: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = 
-            std::sync::OnceLock::new();
-    };
+    () => {};
 }
+
+static COMPTIME_NAMES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 #[macro_export]
 macro_rules! output {
     (str, $output:expr, $name:expr) => {
         #[cfg(test)]
-        $crate::process_comptime(&crate::comptime_NAMES, $output, $name, true);
+        $crate::process_comptime(
+            $output,
+            $name,
+            true,
+            concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/"),
+        );
     };
     
     (raw, $output:expr, $name:expr) => {
         #[cfg(test)]
-        $crate::process_comptime(&crate::comptime_NAMES, $output, $name, false);
+        $crate::process_comptime(
+            $output,
+            $name,
+            false,
+            concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/"),
+        );
     };
 }
 
+pub fn escape_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+pub fn unescape_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('\\') => out.push('\\'),
+                Some('"') => out.push('"'),
+                Some('n') => out.push('\n'),
+                Some('r') => out.push('\r'),
+                Some('t') => out.push('\t'),
+                Some(other) => {
+                    out.push('\\');
+                    out.push(other);
+                }
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 #[track_caller]
-pub fn process_comptime<T: std::fmt::Display>(
-    mutex_lock: &std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>>,
-    output: T, 
-    name: &str, 
-    is_str: bool
-) {
-    let mutex = mutex_lock.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
-    let mut names = match mutex.lock() {
-      Ok(val) => val,
-      Err(err) => {
-        panic!("ERROR: '{}', failed to lock mutex because there is panic, please fix the panic to make mutex lock successfully\n", err);
-      }
+pub fn process_comptime<T: std::fmt::Display>(output: T, name: &str, is_str: bool, dir: &str) {
+    let names = COMPTIME_NAMES.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+    let mut names = match names.lock() {
+        Ok(val) => val,
+        Err(err) => err.into_inner(),
     };
 
     if !names.insert(name.to_string()) {
@@ -164,19 +264,21 @@ pub fn process_comptime<T: std::fmt::Display>(
         panic!("ERROR: Name '{}' is already exists! -> {}:{}:{}\n", name, loc.file(), loc.line(), loc.column());
     }
 
-    std::fs::create_dir_all("./comptime").unwrap();
-    let path = format!("./comptime/{}", name);
+    let path = format!("{}{}", dir, name);
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        std::fs::create_dir_all(parent)
+            .expect("ERROR: failed to create comptime directory");
+    }
 
-    if is_str {
-        if let Err(err) = std::fs::write(path, format!("\"{}\"", output)) {
-          let loc = std::panic::Location::caller();
-          panic!("ERROR: {} -> {}:{}:{}\n", err, loc.file(), loc.line(), loc.column());
-        }
+    let content = if is_str {
+        format!("\"{}\"", escape_string(&output.to_string()))
     } else {
-        if let Err(err) = std::fs::write(path, format!("{}", output)) {
-          let loc = std::panic::Location::caller();
-          panic!("ERROR: {} -> {}:{}:{}\n", err, loc.file(), loc.line(), loc.column());
-        }
+        output.to_string()
+    };
+
+    if let Err(err) = std::fs::write(&path, content) {
+        let loc = std::panic::Location::caller();
+        panic!("ERROR: {} -> {}:{}:{}\n", err, loc.file(), loc.line(), loc.column());
     }
 }
 
@@ -185,57 +287,67 @@ pub fn process_comptime<T: std::fmt::Display>(
 #[macro_export]
 macro_rules! call {
     (raw in, $name:literal, let mut $var:ident $body:block) => {
-        #[cfg(all(test, comptime_ready))]
+        #[allow(unexpected_cfgs)]
         {
-            let mut $var = include!(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name));
-            $body
-        }
-        
-        #[cfg(all(test, not(comptime_ready)))]
-        {
-          let path = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name));
+            #[cfg(all(test, comptime_ready))]
+            {
+                let mut $var = include!(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name));
+                $body
+            }
             
-            if path.exists() {
-            } else {
-                std::eprintln!("comptime error: raw output not found yet");
+            #[cfg(all(test, not(comptime_ready)))]
+            {
+              let path = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name));
+                
+                if path.exists() {
+                } else {
+                    std::eprintln!("comptime error: raw output not found yet");
+                }
             }
         }
     };
     (raw in, $name:literal, let $var:ident $body:block) => {
-        #[cfg(all(test, comptime_ready))]
+        #[allow(unexpected_cfgs)]
         {
-            let $var = include!(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name));
-            $body
-        }
-        
-        #[cfg(all(test, not(comptime_ready)))]
-        {
-          let path = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name));
+            #[cfg(all(test, comptime_ready))]
+            {
+                let $var = include!(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name));
+                $body
+            }
             
-            if path.exists() {
-            } else {
-                std::eprintln!("comptime error: raw output not found yet");
+            #[cfg(all(test, not(comptime_ready)))]
+            {
+              let path = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name));
+                
+                if path.exists() {
+                } else {
+                    std::eprintln!("comptime error: raw output not found yet");
+                }
             }
         }
     };
-    (raw in, $name:literal, const $var:ident: $ty:ident $body:block) => {
-        #[cfg(all(test, comptime_ready))]
+    (raw in, $name:literal, const $var:ident: $ty:ty $body:block) => {
+        #[allow(unexpected_cfgs)]
         {
-            const $var: $ty = include!(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name));
-            $body
-        }
-        
-        #[cfg(all(test, not(comptime_ready)))]
-        {
-          let path = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name));
+            #[cfg(all(test, comptime_ready))]
+            {
+                const $var: $ty = include!(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name));
+                $body
+            }
             
-            if path.exists() {
-            } else {
-                std::eprintln!("comptime error: raw output not found yet");
+            #[cfg(all(test, not(comptime_ready)))]
+            {
+              let path = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name));
+                
+                if path.exists() {
+                } else {
+                    std::eprintln!("comptime error: raw output not found yet");
+                }
             }
         }
     };
     (str in, $name:literal, $val:ident $body:block) => {
+        #[cfg(test)]
         {
             if let Ok(content) = std::fs::read_to_string(concat!(
                 env!("CARGO_MANIFEST_DIR"),
@@ -244,7 +356,11 @@ macro_rules! call {
             )) {
                 let trimmed = content.trim();
                 if !trimmed.is_empty() {
-                    let $val = trimmed.to_string();
+                    let unquoted = trimmed
+                        .strip_prefix('"')
+                        .and_then(|s| s.strip_suffix('"'))
+                        .unwrap_or(trimmed);
+                    let $val = $crate::unescape_string(unquoted);
                     $body
                 } else {
                     std::eprintln!("comptime error: output not found yet");
@@ -262,11 +378,18 @@ macro_rules! call {
         include!(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name));
     };
     (token, $name:literal) => {
-        #[cfg(test)]
-        $crate::handle_default!();
+        {
+            #[allow(unreachable_code, unexpected_cfgs)]
+            {
+                #[cfg(all(test, not(comptime_ready)))]
+                let _comptime_val = panic!("comptime error: output not found yet");
 
-        #[cfg(not(test))]
-        comptime_token!($name);
+                #[cfg(any(not(test), comptime_ready))]
+                let _comptime_val = $crate::comptime_token!($name);
+
+                _comptime_val
+            }
+        }
     };
     (partial, $name:literal, $($item:tt)*) => {
         #[cfg(not(test))]
@@ -280,9 +403,17 @@ macro_rules! call {
         include!(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name));
     };
     ($name:literal) => {
-        { 
-        #[cfg(any(not(test), comptime_ready))]
-        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name))
+        {
+            #[allow(unreachable_code, unexpected_cfgs)]
+            {
+                #[cfg(all(test, not(comptime_ready)))]
+                let _comptime_val = panic!("comptime error: output not found yet");
+
+                #[cfg(any(not(test), comptime_ready))]
+                let _comptime_val = include!(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name));
+
+                _comptime_val
+            }
         }
     };
 }
@@ -327,6 +458,10 @@ macro_rules! parse {
 		$item
 		$crate::parse!($($rest)*);
 	};
+	($e:expr; $($rest:tt)*) => {
+		$e;
+		$crate::parse!($($rest)*);
+	};
 	() => {};
 }
 
@@ -334,6 +469,7 @@ macro_rules! parse {
 macro_rules! call_scope {
     ($($t:tt)*) => {
         #[cfg(all(not(test), not(comptime_ready)))]
+        #[allow(unexpected_cfgs)]
         {
             $($t)*
         }
@@ -364,13 +500,17 @@ macro_rules! async_source {
 #[derive(Debug, Deserialize)]
 pub struct Info {
     pub name: String,
-    pub line: usize,
+    #[serde(default)]
+    pub line: Option<usize>,
+    #[serde(default)]
     pub generics: Vec<String>,
-    #[serde(rename = "where")]
+    #[serde(default, rename = "where")]
     pub where_clause: Vec<WhereClause>,
+    #[serde(default)]
     pub parameters: Vec<Parameter>,
-    #[serde(rename = "return_type")]
-    pub return_type: String,
+    #[serde(default, rename = "return_type")]
+    pub return_type: Option<String>,
+    #[serde(default)]
     pub callers: Vec<Caller>,
 }
 
@@ -389,21 +529,36 @@ pub struct Caller {
     pub line: usize,
 }
 
-pub fn read_comptime_data(filename: &str) -> Option<Info> {
-    let path = format!("./comptime/{}.json", filename);
-    let content = std::fs::read_to_string(&path).ok()?;
-    match serde_json::from_str::<Info>(&content) {
-        Ok(info) => Some(info),
-        Err(e) => {
-            panic!("Error parsing JSON {}: {}", path, e);
-            None
-        }
-    }
+pub fn read_comptime_data(path: &str) -> Option<Info> {
+    let content = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str::<Info>(&content).ok()
 }
 
 #[macro_export]
 macro_rules! get {
     ($filename:expr) => {
-        $crate::read_comptime_data($filename)
+        $crate::read_comptime_data(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/comptime/",
+            $filename,
+            ".json"
+        ))
     };
+}
+#[cfg(test)]
+mod tests {
+    use crate::{escape_string, unescape_string};
+
+    #[test]
+    fn escape_unescape_roundtrip() {
+        let s = "hello \"world\" with \\ backslash\nnewline\ttab\rreturn";
+        let escaped = escape_string(s);
+        assert_eq!(escaped, "hello \\\"world\\\" with \\\\ backslash\\nnewline\\ttab\\rreturn");
+        assert_eq!(unescape_string(&escaped), s);
+    }
+
+    #[test]
+    fn unescape_plain() {
+        assert_eq!(unescape_string("plain text"), "plain text");
+    }
 }
