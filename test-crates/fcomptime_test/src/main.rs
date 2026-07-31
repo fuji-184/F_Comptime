@@ -231,6 +231,7 @@ pub fn impl_str_result() -> &'static str {
     call!("impl_str", "")
 }
 
+#[comptime]
 fn main() {
     assert_eq!(bare_call_result(), 25);
     assert_eq!(token_result(), 25);

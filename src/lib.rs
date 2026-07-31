@@ -285,6 +285,49 @@ pub fn process_comptime<T: std::fmt::Display>(output: T, name: &str, is_str: boo
 
 
 #[macro_export]
+macro_rules! runtime_read {
+    ($name:literal) => {
+        $crate::runtime_read_value(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name),
+            $name,
+        )
+    };
+}
+
+pub fn write_comptime_value<T: std::fmt::Display>(value: &T, dir: &str, name: &str, is_str: bool) {
+    let path = format!("{}{}", dir, name);
+    if let Some(parent) = std::path::Path::new(&path).parent() {
+        std::fs::create_dir_all(parent)
+            .expect("ERROR: failed to create comptime directory");
+    }
+    let content = if is_str {
+        format!("\"{}\"", escape_string(&value.to_string()))
+    } else {
+        value.to_string()
+    };
+    if let Err(err) = std::fs::write(&path, content) {
+        panic!("ERROR: failed to write '{}': {}", path, err);
+    }
+}
+
+pub fn runtime_read_value<T: std::str::FromStr>(path: &str, name: &str) -> T {
+    let content = std::fs::read_to_string(path)
+        .unwrap_or_else(|_| panic!("comptime error: output not found yet: {}", name));
+    let trimmed = content.trim();
+    let unquoted = trimmed
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(trimmed);
+    match unquoted.parse::<T>() {
+        Ok(v) => v,
+        Err(_) => panic!(
+            "comptime error: cannot parse '{}' from comptime file '{}' as the required type",
+            trimmed, name
+        ),
+    }
+}
+
+#[macro_export]
 macro_rules! call {
     (raw in, $name:literal, let mut $var:ident $body:block) => {
         #[allow(unexpected_cfgs)]
