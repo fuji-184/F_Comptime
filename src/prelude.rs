@@ -5,6 +5,7 @@ pub use crate::{
     output, 
     call_scope, 
     call, 
+    func,
     comptime_source,
     info,
     get

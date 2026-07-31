@@ -1,0 +1,10 @@
+[package]
+name = "fcomptime_test"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+fcomptime = { path = "../..", features = ["async"] }
+
+[features]
+comptime = []

@@ -370,12 +370,19 @@ macro_rules! call {
             }
         }
     };
-    (full, $name:literal) => {
-        #[cfg(test)]
-        $crate::handle_default!();
+    (token, $name:literal, $default:expr) => {
+        {
+            #[allow(unreachable_code, unexpected_cfgs)]
+            {
+                #[cfg(all(test, not(comptime_ready)))]
+                let _comptime_val = $default;
 
-        #[cfg(not(test))]
-        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name));
+                #[cfg(any(not(test), comptime_ready))]
+                let _comptime_val = $crate::comptime_include_expr!($name, $default);
+
+                _comptime_val
+            }
+        }
     };
     (token, $name:literal) => {
         {
@@ -385,22 +392,43 @@ macro_rules! call {
                 let _comptime_val = panic!("comptime error: output not found yet");
 
                 #[cfg(any(not(test), comptime_ready))]
-                let _comptime_val = $crate::comptime_token!($name);
+                let _comptime_val = $crate::comptime_include_expr!($name);
 
                 _comptime_val
             }
         }
     };
-    (partial, $name:literal, $($item:tt)*) => {
+    (full, $name:literal) => {
+        #[cfg(test)]
+        $crate::handle_default!();
+
         #[cfg(not(test))]
-        $crate::comptime_type!($name, $($item)*);
+        $crate::comptime_include!($name);
     };
     (full, $name:literal, $($default:tt)*) => {
         #[cfg(test)]
         $crate::handle_default!($($default)*);
 
         #[cfg(not(test))]
-        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name));
+        $crate::comptime_include!($name, $($default)*);
+    };
+    (partial, $name:literal, $($item:tt)*) => {
+        #[cfg(not(test))]
+        $crate::comptime_type!($name, $($item)*);
+    };
+    ($name:literal, $default:expr) => {
+        {
+            #[allow(unreachable_code, unexpected_cfgs)]
+            {
+                #[cfg(all(test, not(comptime_ready)))]
+                let _comptime_val = $default;
+
+                #[cfg(any(not(test), comptime_ready))]
+                let _comptime_val = $crate::comptime_include_expr!($name, $default);
+
+                _comptime_val
+            }
+        }
     };
     ($name:literal) => {
         {
@@ -410,7 +438,7 @@ macro_rules! call {
                 let _comptime_val = panic!("comptime error: output not found yet");
 
                 #[cfg(any(not(test), comptime_ready))]
-                let _comptime_val = include!(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name));
+                let _comptime_val = $crate::comptime_include_expr!($name);
 
                 _comptime_val
             }

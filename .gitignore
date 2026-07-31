@@ -1,3 +1,4 @@
 target/
 cargo-comptime/target/
 fcomptime_macro/target/
+test-crates/fcomptime_test/comptime/

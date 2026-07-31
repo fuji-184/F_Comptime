@@ -32,7 +32,7 @@ While library like Crabtime solve a similar problem, F_Comptime solves the limit
 | **Dependency** | **Shared dependencies with the main crate** Reuse the same compilation cache of the main crate dependencies. | **Copy dependencies to new separated project** Duplicating compilation artifacts that consumes SSD space. |
 | **Shareable** | **Can share the comptime logic cross project/crate** So that it can be reused with different input. | **Fixed, can't share the compile time logic** Can only share the output. |
 | **Nested** | **Support nested comptime** Can use comptime output inside other comptime. | **Can't use the compile time evaluation output inside other Crabtime macro** |
-| **Impl And Trait Support** | **Support Impl and Trait** Can use comptime inside method that takes `self` parameter. | **Limited Support** Can only be used in assosiated function |
+| **Impl And Trait Support** | **Trait support** Can use comptime inside trait default methods. `impl` methods are not supported yet (extract into a free function). | **Limited Support** Can only be used in assosiated function |
 | **Parameter Types And Values Info** | **Currently can do some of them** Support for info about normal fn parameter types, normal fn parameter value, generic fn types, and generic fn values. It doesn't support method inside impl block without potential duplicate names and Trait yet. | **Can't know types and values info of fn and generic parameter** |
 
 ## Crates
@@ -42,6 +42,7 @@ While library like Crabtime solve a similar problem, F_Comptime solves the limit
 | `fcomptime` | Main library |
 | `fcomptime_macro` | Internal proc-macro crate |
 | `cargo-comptime` | Cargo subcommand — orchestrates test → build pipeline |
+| `test-crates/fcomptime_test` | End-to-end test crate (not published) |
 
 ---
 
@@ -59,7 +60,10 @@ init_comptime!();
 
 ### `#[comptime]` (proc-macro attribute)
 
-Placed on a function, it enables the code inside the function can contain code that runs before compile time.
+Placed on a function. There are two ways to use it:
+
+- **Without parameters** — the `source!` body runs through the test harness when running `cargo test --features=comptime`, and the `output!` values are embedded with `call!`.
+- **With parameters** — the function becomes a comptime template. It is not executed by the test harness; instead it is inlined at call sites with `func!("fn_name", arg1, arg2, ...)`.
 
 ```rust
 #[comptime]
@@ -67,6 +71,74 @@ fn function() {
     
 }
 ```
+
+---
+
+### `func!("fn_name", arg1, arg2, ...)`
+
+Calls a `#[comptime]` function with any number of dynamic arguments. `func!` looks up the function by name in the current crate, inlines its `source!` body at the call site, and binds the given arguments to the function's parameters. The arguments can be any expression.
+
+```rust
+#[comptime]
+fn math(i: i32) {
+    source! {
+        let res = i * 2;
+        output!(raw, res, "hasil");
+    }
+}
+
+fn main() {
+    call_scope! {
+        // more than 1 parameter? just add more args:
+        // func!("fn_name", param1, param2, param3, ...)
+        let tes = func!("math", 10);
+        println!("{}", tes);
+    }
+}
+```
+
+Multiple parameters:
+
+```rust
+#[comptime]
+fn area(w: i32, h: i32) {
+    source! {
+        let res = w * h;
+        output!(raw, res, "luas");
+    }
+}
+
+let a = func!("area", 3, 4); // 12
+```
+
+Arguments are arbitrary expressions evaluated at the call site:
+
+```rust
+let v = 7;
+func!("math", v)                    // uses the runtime value of v
+func!("math", 5 * 2)                // 20
+func!("math", func!("math", 3))     // nested func! call: 12
+```
+
+`func!` also works inside another `source!` block (nested comptime):
+
+```rust
+#[comptime]
+fn use_local() {
+    source! {
+        let base = 100;
+        let tes = func!("math", base);
+        output!(raw, tes, "local_data");
+    }
+}
+```
+
+Limitations:
+- the function must be annotated `#[comptime]` and located in the current crate (`src`, `tests`, `examples`, `benches`)
+- only plain `name: type` parameters are supported (no `self`, no destructured patterns)
+- the number of arguments must match the number of parameters
+- the body must call `output!(raw|str, ...)` at least once inside `source!`
+- `async_source!` is not supported inside `func!` bodies (use sync `source!`)
 
 ---
 
@@ -96,7 +168,7 @@ Setup: Enables the feature `async`
 ```rust
 #[comptime]
 fn function() {
-    async_source {
+    async_source! {
         // the async code
     }
 }
@@ -166,7 +238,7 @@ call!(partial, "result",
 
 call!(str in, "name", any_name {
     // parse to number type if need to be number
-    let int = any_name.parse::<i32>.unwrap();
+    let int = any_name.parse::<i32>().unwrap();
 });
 
 call!(raw in, "name", let any_name {
@@ -195,32 +267,11 @@ comptime_source! {
 
 ---
 
-## How to use the comptime in Impl and Trait
+## How to use the comptime in Trait
 
-Places the `#[comptime]` above the declaration, then writing the comptime macro normally
+Place `#[comptime]` above the trait declaration, then write the comptime macro normally. The `source!` body inside the default method is executed through the test harness like any other `#[comptime]` function.
 
 ```rust
-struct Data;
-
-#[comptime]
-impl Data {
-  fn a() {
-    ...
-    source!{
-      
-    }
-    ...
-  }
-  
-  fn b() {
-    ...
-    source!{
-      
-    }
-    ...
-  }
-}
-
 #[comptime]
 trait Trait {
   fn a() {
@@ -240,6 +291,8 @@ trait Trait {
   }
 }
 ```
+
+Note: `#[comptime]` on methods inside `impl` blocks is currently **not supported** and produces a compile error. Extract the computation into a free function (optionally a `#[comptime]` template called with `func!`) instead.
 
 ---
 
@@ -333,7 +386,7 @@ fn a2() {
 
 ## Knowing Parameter Types And Values Info with `#[info]` and `get!()`
 
-### `#[info`
+### `#[info]`
 
 Inspect the types and values of parameters (both `normal and generic`). `Currently only support pure function`. `It can be used inside impl and trait but the method name must be unique globally`. It must be placed above function that is the function declaration itself, and other function that call the declaration function
 
@@ -543,19 +596,38 @@ cargo comptime run nested raw
 
 ---
 
+## End-to-End Tests
+
+`test-crates/fcomptime_test/` is the end-to-end test crate. It covers:
+
+- `output!` (`raw` and `str`) and the name registry via `init_comptime!()`
+- `call!` variants: `str in` / `raw in` (let, let mut, const), `full` (with and without default item), `partial` (multi placeholder embedding), `token`, and bare
+- `call_scope!`
+- `func!`: single, multiple and zero parameters, literal/variable/expression arguments, branches, and nested inside another `source!`
+- `#[info]` / `get!`: parameters, generics, callers, and missing-info handling
+- runtime value capture (variables, loops), async via `async_source!`
+- cross-target access: lib outputs consumed by binaries
+
+Run the full suite (regenerates the `comptime/` outputs, then builds and runs both binaries with assertions):
+
+```bash
+./test-crates/run.sh
+```
+
+---
+
 ## Known Limitation
-same limitation in Crabtime about these ones
-- Can not use comptime output inside other comptime as non expression raw token/syntax yet
-- Can not know the parameter types and values
-- Can not know generic types and values
+
+- `#[comptime]` on methods inside `impl` blocks is not supported yet (extract into a free `#[comptime]` function or use a trait)
+- `func!` only supports plain `name: type` parameters (no `self`, no destructured patterns) and sync `source!` bodies (`async_source!` inside `func!` is rejected)
+- Calling comptime output inside other comptime as non expression raw token/syntax requires `cargo comptime run nested raw`
 
 ---
 
 ## Road Map
 
 - Add F_Comptime support in [R_Lib](https://github.com/fuji-184/RLib)
-- Figuring how to make using comptime output inside other comptime as non expression raw token/syntax possible
-- Figuring how to make knowing parameter types and values possible
-- Figuring how to make knowing generic types and values possible
+- Support `#[comptime]` on methods inside `impl` blocks
+- Support `async_source!` inside `func!`
 
 ---

@@ -14,3 +14,7 @@ serde_json = "*"
 default = ["fcomptime_macro"]
 nightly = ["fcomptime_macro/nightly"]
 async = ["dep:tokio"]
+
+[workspace]
+members = ["test-crates/fcomptime_test"]
+default-members = ["."]

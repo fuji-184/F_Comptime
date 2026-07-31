@@ -1,0 +1,21 @@
+lah parameternya jangan fixed, kalau fixed ya ga guna lah, apa gunanya parametwr kalau fixed
+
+hapus dan ganti, lawak amat lu asal buat
+
+parameternya itu yang
+
+#[comptime]
+fn math(i: i32) {
+    source! {
+        let res = i * 2;
+        output!(raw, res, "hasil");
+    }
+}
+
+fn main() {
+    call_scope! {
+        // kalau parameternya lebib dari 1 tinggal func!("nama fungsi", param1, param2, param3, dan seterusnya)
+        let tes = func!("math", 10);
+        println!("{}", tes);
+    }
+}

@@ -8,3 +8,5 @@ edition = "2024"
 [[bin]]
 name = "cargo-comptime"
 path = "src/main.rs"
+
+[workspace]
