@@ -2283,36 +2283,39 @@ pub fn func(input: TokenStream) -> TokenStream {
 
     let rerun = build_rerun_token(&file_path, &file_source);
 
-    let mut code = format!("{{ {} ", rerun);
-    code.push_str("let mut __fcomptime_val: Option<_> = None;\n    {\n");
+    let mut compute = String::new();
+    compute.push_str("let mut __fcomptime_val: Option<_> = None;\n    {\n");
     for (param, arg) in bindable.iter().zip(args.iter()) {
-        code.push_str(&format!("        let {} = {};\n", param, arg));
+        compute.push_str(&format!("        let {} = {};\n", param, arg));
     }
     for line in transformed.lines() {
-        code.push_str("        ");
-        code.push_str(line);
-        code.push('\n');
+        compute.push_str("        ");
+        compute.push_str(line);
+        compute.push('\n');
     }
-    code.push_str("    }\n");
-    code.push_str("    let __fcomptime_v = match __fcomptime_val {\n");
-    code.push_str("        Some(__fcomptime_v) => __fcomptime_v,\n");
-    code.push_str(&format!("        None => panic!({:?}),\n", panic_msg));
-    code.push_str("    };\n");
+    compute.push_str("    }\n");
+    compute.push_str("    let __fcomptime_v = match __fcomptime_val {\n");
+    compute.push_str("        Some(__fcomptime_v) => __fcomptime_v,\n");
+    compute.push_str(&format!("        None => panic!({:?}),\n", panic_msg));
+    compute.push_str("    };\n");
+
+    let mut code = format!("{{ {} ", rerun);
     match &comptime_label {
         Some(label) => {
             let is_str = last_kind == "str";
             code.push_str(&format!(
-                "    #[cfg(test)]\n    {{\n        fcomptime::write_comptime_value(\
+                "    #[cfg(test)]\n    {{\n{}        fcomptime::write_comptime_value(\
                  &__fcomptime_v, concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/comptime/\"), {:?}, {});\n\
                  \x20       __fcomptime_v\n    }}\n",
-                label, is_str
+                compute, label, is_str
             ));
             code.push_str(&format!(
-                "    #[cfg(not(test))]\n    fcomptime::comptime_include_expr!({:?}, __fcomptime_v)\n",
-                label
+                "    #[cfg(not(test))]\n    fcomptime::comptime_include_expr!({:?}, {{\n{}\n        __fcomptime_v\n    }})\n",
+                label, compute
             ));
         }
         None => {
+            code.push_str(&compute);
             code.push_str("    __fcomptime_v\n");
         }
     }
