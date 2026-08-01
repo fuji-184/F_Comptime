@@ -4,7 +4,7 @@
 )]
 
 use proc_macro::TokenStream;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIterator};
@@ -1913,6 +1913,63 @@ fn has_comptime_attr(fn_node: Node, src: &[u8]) -> bool {
     false
 }
 
+static FILE_FN_CACHE: std::sync::LazyLock<
+    Mutex<HashMap<PathBuf, (u64, u64, Vec<(String, String)>)>>,
+> = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn cached_comptime_fns(path: &Path) -> Vec<(String, String)> {
+    let Ok(meta) = fs::metadata(path) else {
+        return Vec::new();
+    };
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let len = meta.len();
+    if let Ok(cache) = FILE_FN_CACHE.lock() {
+        if let Some((cm, cl, items)) = cache.get(path) {
+            if *cm == mtime && *cl == len {
+                return items.clone();
+            }
+        }
+    }
+    let Ok(content) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let mut p = Parser::new();
+    p.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
+    let Some(tree) = p.parse(&content, None) else {
+        return Vec::new();
+    };
+    let Ok(q) = Query::new(
+        &tree_sitter_rust::LANGUAGE.into(),
+        "(function_item name: (identifier) @n)",
+    ) else {
+        return Vec::new();
+    };
+    let mut items = Vec::new();
+    let mut qc = QueryCursor::new();
+    let mut qm = qc.matches(&q, tree.root_node(), content.as_bytes());
+    while let Some(mm) = qm.next() {
+        for cap in mm.captures {
+            let Ok(n) = cap.node.utf8_text(content.as_bytes()) else { continue };
+            let Some(fn_node) = cap.node.parent() else { continue };
+            if !has_comptime_attr(fn_node, content.as_bytes()) {
+                continue;
+            }
+            if let Ok(item_text) = fn_node.utf8_text(content.as_bytes()) {
+                items.push((n.to_string(), item_text.to_string()));
+            }
+        }
+    }
+    if let Ok(mut cache) = FILE_FN_CACHE.lock() {
+        cache.insert(path.to_path_buf(), (mtime, len, items.clone()));
+    }
+    items
+}
+
 fn find_fn_by_name(manifest_dir: &str, name: &str) -> Result<(PathBuf, String, String), String> {
     let base = PathBuf::from(manifest_dir);
     let mut stack = vec![base.join("src")];
@@ -1933,29 +1990,9 @@ fn find_fn_by_name(manifest_dir: &str, name: &str) -> Result<(PathBuf, String, S
                     && path.extension().map_or(false, |e| e == "rs")
                     && !path.to_str().unwrap_or("").contains("_comptime.rs")
                 {
-                    let Ok(content) = fs::read_to_string(&path) else { continue };
-                    let mut p = Parser::new();
-                    p.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
-                    let Some(tree) = p.parse(&content, None) else { continue };
-                    let Ok(q) = Query::new(
-                        &tree_sitter_rust::LANGUAGE.into(),
-                        "(function_item name: (identifier) @n)",
-                    ) else { continue };
-                    let mut qc = QueryCursor::new();
-                    let mut qm = qc.matches(&q, tree.root_node(), content.as_bytes());
-                    while let Some(mm) = qm.next() {
-                        for cap in mm.captures {
-                            let Ok(n) = cap.node.utf8_text(content.as_bytes()) else { continue };
-                            if n != name {
-                                continue;
-                            }
-                            let Some(fn_node) = cap.node.parent() else { continue };
-                            if !has_comptime_attr(fn_node, content.as_bytes()) {
-                                continue;
-                            }
-                            if let Ok(item_text) = fn_node.utf8_text(content.as_bytes()) {
-                                candidates.push((path.clone(), item_text.to_string()));
-                            }
+                    for (n, item) in cached_comptime_fns(&path) {
+                        if n == name {
+                            candidates.push((path.clone(), item));
                         }
                     }
                 }

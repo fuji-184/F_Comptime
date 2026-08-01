@@ -8,3 +8,4 @@ fcomptime = { path = "../..", features = ["async"] }
 
 [features]
 comptime = []
+comptime_ready = []

@@ -35,7 +35,7 @@ fn main() {
 }
 
 
-Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.55s
+Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.12s
 
 #![feature(prelude_import)]
 extern crate std;
@@ -44,50 +44,44 @@ use std::prelude::rust_2024::*;
 use fcomptime::prelude::*;
 fn non_comptime(i: i32) -> i32 {
     i + 10 * 10
-}
-const _: (u64, u64) = (1785513040613354826, 17361965355407379385);
-fn with_param_caller_no_need_to_type_source(i: i32) {}
-const _: (u64, u64) = (1785513040613354826, 17361965355407379385);
-fn main() {
-    #[allow(unexpected_cfgs)]
-    {
-        let become_comptime = {
-            #[allow(unreachable_code, unexpected_cfgs)]
-            {
-                let _comptime_val = 1100;
-                _comptime_val
-            }
-        };
+}                                                 const _: (u64, u64) = (1785514985165354942, 11015831497268049505);                                  fn with_param_caller_no_need_to_type_source(i: i32) {}
+const _: (u64, u64) = (1785514985165354942, 11015831497268049505);
+fn main() {                                           #[allow(unexpected_cfgs)]                         {
+        let become_comptime = {                               #[allow(unreachable_code, unexpected_cfgs)]
+            {                                                     let _comptime_val = 1100;
+                _comptime_val                                 }                                             };
         {
             ::std::io::_print(format_args!("become_comptime: {0}\n", become_comptime));
         };
         let second = {
-            const _: (u64, u64) = (1785513040613354826, 17361965355407379385);
-            let mut __fcomptime_val: Option<_> = None;
-            {
-                let i = 20;
-                {
-                    {
-                        let res = i + 20 * 30;
-                        {
-                            __fcomptime_val = Some(i);
-                        };
-                    }
-                }
-            }
-            match __fcomptime_val {
-                Some(__fcomptime_v) => __fcomptime_v,
-                None => {
-                    ::core::panicking::panic_fmt(
-                        format_args!(
-                            "func!: comptime fn \'with_param_caller_no_need_to_type_source\' executed but no output!(raw|str, ...) ran along the taken path",
-                        ),
-                    );
-                }
-            }
-        };
-        {
+            const _: (u64, u64) = (1785514985165354942, 11015831497268049505);
+            20
+        };                                                {
             ::std::io::_print(format_args!("second: {0}\n", second));
         };
     }
 }
+[root@localhost tes1]#
+
+isi fungsi adalah 
+#[comptime]
+fn with_param_caller_no_need_to_type_source(i: i32) {
+    source! {
+        let res = i + 20 * 30;
+        output!(raw, i, "second");
+    }
+}
+
+dipanggil oakai param 20  let second = func!("with_param_caller_no_need_to_type_source", 20);
+        println!("second: {}", second);
+
+
+sejak kapan 20 + 20 * 30 = 20?
+
+Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.18s
+     Running `target/debug/tes1`
+become_comptime: 1100
+second: 20
+[root@localhost tes1]#
+
+itu salah, kode fungsinya ga dievaluasi, cuma nilai parameter langsung dioutput tanpa dihitung pakai kode fungsi, lawak, itu bug besar. func harusnya jalankan kode komputasinya lalu return hasilnya, bukan langsung return parameter gitu

@@ -142,6 +142,38 @@ fn run_cargo_test() {
     save_test_timestamp();
 }
 
+fn has_comptime_ready_feature() -> bool {
+    static CACHE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHE.get_or_init(|| {
+        let Ok(out) = Command::new("cargo")
+            .args(["metadata", "--format-version=1", "--no-deps"])
+            .output()
+        else {
+            return false;
+        };
+        if !out.status.success() {
+            return false;
+        }
+        let Ok(text) = String::from_utf8(out.stdout) else {
+            return false;
+        };
+        text.contains("\"comptime_ready\"")
+    })
+}
+
+fn phase2_cargo(extra: &[&str]) -> Command {
+    let mut cmd = Command::new("cargo");
+    if has_comptime_ready_feature() {
+        cmd.args(["test", "--features=comptime,comptime_ready", "--no-run"]);
+    } else {
+        eprintln!("warning: package does not declare the `comptime_ready` feature; falling back to RUSTFLAGS (rebuilds all dependencies)");
+        cmd.env("RUSTFLAGS", "--cfg comptime_ready")
+            .args(["test", "--features=comptime", "--no-run"]);
+    }
+    cmd.args(extra);
+    cmd
+}
+
 fn run_cargo_test_nested_raw() {
     let output = Command::new("cargo")
         .args(&["test", "--features=comptime", "--no-run", "--message-format=json", "--profile=dev", "--", "--no-capture"])
@@ -206,9 +238,7 @@ fn run_cargo_test_nested_raw() {
         break;
     }
     
-    let output = Command::new("cargo")
-        .env("RUSTFLAGS", "--cfg comptime_ready")
-        .args(&["test", "--features=comptime", "--no-run", "--message-format=json", "--profile=dev", "--", "--no-capture"])
+    let output = phase2_cargo(&["--message-format=json", "--profile=dev", "--", "--no-capture"])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .output()
@@ -216,10 +246,7 @@ fn run_cargo_test_nested_raw() {
         
 
     if !output.status.success() {
-        let _ = Command::new("cargo")
-            .env("RUSTFLAGS", "--cfg comptime_ready")
-            .args(&["test", "--features=comptime", "--no-run", "--profile=dev", "--", "--no-capture"])
-            .status();
+        let _ = phase2_cargo(&["--profile=dev", "--", "--no-capture"]).status();
         exit(1);
     }
 
@@ -242,10 +269,7 @@ fn run_cargo_test_nested_raw() {
     }
 
     let Some(bin_path) = test_binary else {
-        let _ = Command::new("cargo")
-            .env("RUSTFLAGS", "--cfg comptime_ready")
-            .args(&["test", "--features=comptime", "--no-run"])
-            .status();
+        let _ = phase2_cargo(&["--no-run"]).status();
         exit(1);
     };
 

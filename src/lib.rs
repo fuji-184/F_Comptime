@@ -332,13 +332,13 @@ macro_rules! call {
     (raw in, $name:literal, let mut $var:ident $body:block) => {
         #[allow(unexpected_cfgs)]
         {
-            #[cfg(all(test, comptime_ready))]
+            #[cfg(all(test, feature = "comptime_ready"))]
             {
                 let mut $var = include!(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name));
                 $body
             }
             
-            #[cfg(all(test, not(comptime_ready)))]
+            #[cfg(all(test, not(feature = "comptime_ready")))]
             {
               let path = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name));
                 
@@ -352,13 +352,13 @@ macro_rules! call {
     (raw in, $name:literal, let $var:ident $body:block) => {
         #[allow(unexpected_cfgs)]
         {
-            #[cfg(all(test, comptime_ready))]
+            #[cfg(all(test, feature = "comptime_ready"))]
             {
                 let $var = include!(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name));
                 $body
             }
             
-            #[cfg(all(test, not(comptime_ready)))]
+            #[cfg(all(test, not(feature = "comptime_ready")))]
             {
               let path = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name));
                 
@@ -372,13 +372,13 @@ macro_rules! call {
     (raw in, $name:literal, const $var:ident: $ty:ty $body:block) => {
         #[allow(unexpected_cfgs)]
         {
-            #[cfg(all(test, comptime_ready))]
+            #[cfg(all(test, feature = "comptime_ready"))]
             {
                 const $var: $ty = include!(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name));
                 $body
             }
             
-            #[cfg(all(test, not(comptime_ready)))]
+            #[cfg(all(test, not(feature = "comptime_ready")))]
             {
               let path = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/comptime/", $name));
                 
@@ -417,10 +417,10 @@ macro_rules! call {
         {
             #[allow(unreachable_code, unexpected_cfgs)]
             {
-                #[cfg(all(test, not(comptime_ready)))]
+                #[cfg(all(test, not(feature = "comptime_ready")))]
                 let _comptime_val = $default;
 
-                #[cfg(any(not(test), comptime_ready))]
+                #[cfg(any(not(test), feature = "comptime_ready"))]
                 let _comptime_val = $crate::comptime_include_expr!($name, $default);
 
                 _comptime_val
@@ -431,10 +431,10 @@ macro_rules! call {
         {
             #[allow(unreachable_code, unexpected_cfgs)]
             {
-                #[cfg(all(test, not(comptime_ready)))]
+                #[cfg(all(test, not(feature = "comptime_ready")))]
                 let _comptime_val = panic!("comptime error: output not found yet");
 
-                #[cfg(any(not(test), comptime_ready))]
+                #[cfg(any(not(test), feature = "comptime_ready"))]
                 let _comptime_val = $crate::comptime_include_expr!($name);
 
                 _comptime_val
@@ -463,10 +463,10 @@ macro_rules! call {
         {
             #[allow(unreachable_code, unexpected_cfgs)]
             {
-                #[cfg(all(test, not(comptime_ready)))]
+                #[cfg(all(test, not(feature = "comptime_ready")))]
                 let _comptime_val = $default;
 
-                #[cfg(any(not(test), comptime_ready))]
+                #[cfg(any(not(test), feature = "comptime_ready"))]
                 let _comptime_val = $crate::comptime_include_expr!($name, $default);
 
                 _comptime_val
@@ -477,10 +477,10 @@ macro_rules! call {
         {
             #[allow(unreachable_code, unexpected_cfgs)]
             {
-                #[cfg(all(test, not(comptime_ready)))]
+                #[cfg(all(test, not(feature = "comptime_ready")))]
                 let _comptime_val = panic!("comptime error: output not found yet");
 
-                #[cfg(any(not(test), comptime_ready))]
+                #[cfg(any(not(test), feature = "comptime_ready"))]
                 let _comptime_val = $crate::comptime_include_expr!($name);
 
                 _comptime_val
@@ -539,7 +539,7 @@ macro_rules! parse {
 #[macro_export]
 macro_rules! call_scope {
     ($($t:tt)*) => {
-        #[cfg(all(not(test), not(comptime_ready)))]
+        #[cfg(all(not(test), not(feature = "comptime_ready")))]
         #[allow(unexpected_cfgs)]
         {
             $($t)*
