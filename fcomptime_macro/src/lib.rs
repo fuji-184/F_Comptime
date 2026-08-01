@@ -118,6 +118,10 @@ pub fn comptime(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let source_code = fs::read_to_string(&target_file).unwrap_or_default();
     let rerun_token = build_rerun_token(&target_file, &source_code);
+    let comptime_fn_names: Vec<String> = cached_comptime_fns(&target_file)
+        .iter()
+        .map(|(n, _)| n.clone())
+        .collect();
 
     let mut parser = Parser::new();
     parser.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
@@ -229,6 +233,7 @@ pub fn comptime(attr: TokenStream, item: TokenStream) -> TokenStream {
                     ParamPolicy::Skip,
                     &[],
                     false,
+                    &comptime_fn_names,
                 );
                 test_mods.push_str(&mods);
                 errors.extend(errs);
@@ -242,6 +247,13 @@ pub fn comptime(attr: TokenStream, item: TokenStream) -> TokenStream {
                 let start_row =
                     find_container_start_row(root_node, &source_code, base_line, root_kind);
                 let generics = container_generics(&item_str, container_node);
+                let is_trait_impl = root_kind == "impl_item"
+                    && container_node.child_by_field_name("trait").is_some();
+                let policy = if is_trait_impl {
+                    ParamPolicy::AllowNonSelf
+                } else {
+                    ParamPolicy::ErrorIfNonSelf
+                };
                 let mut item_edits: Vec<(usize, usize, String)> = Vec::new();
                 for method in direct_functions(container_node) {
                     let Ok(method_text) = method.utf8_text(item_str.as_bytes()) else {
@@ -257,9 +269,10 @@ pub fn comptime(attr: TokenStream, item: TokenStream) -> TokenStream {
                         &source_code,
                         root_node,
                         &method_name,
-                        ParamPolicy::ErrorIfNonSelf,
+                        policy,
                         &generics,
                         true,
+                        &comptime_fn_names,
                     );
                     test_mods.push_str(&mods);
                     errors.extend(errs);
@@ -304,6 +317,95 @@ pub fn comptime(attr: TokenStream, item: TokenStream) -> TokenStream {
 enum ParamPolicy {
     Skip,
     ErrorIfNonSelf,
+    AllowNonSelf,
+}
+
+fn find_item_end_line(root: Node, line: usize) -> usize {
+    let point = tree_sitter::Point {
+        row: line.saturating_sub(1),
+        column: 0,
+    };
+    let Some(node) = root.descendant_for_point_range(point, point) else {
+        return line + 1;
+    };
+    let mut cur = node;
+    while let Some(p) = cur.parent() {
+        cur = p;
+        if p.kind() == "function_item" || p.kind() == "impl_item" || p.kind() == "trait_item" {
+            return p.end_position().row + 1;
+        }
+    }
+    line + 1
+}
+
+fn direct_comptime_calls(scanned: &str, comptime_fn_names: &[String]) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut p = Parser::new();
+    p.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
+    let Some(tree) = p.parse(scanned, None) else {
+        return found;
+    };
+    let root = tree.root_node();
+    let call_q = Query::new(
+        &tree_sitter_rust::LANGUAGE.into(),
+        "(call_expression function: (identifier) @f) @c",
+    );
+    let generic_q = Query::new(
+        &tree_sitter_rust::LANGUAGE.into(),
+        "(generic_function function: (identifier) @f) @c",
+    );
+    for q in [call_q, generic_q].into_iter().flatten() {
+        let mut c = QueryCursor::new();
+        let mut qm = c.matches(&q, root, scanned.as_bytes());
+        while let Some(m) = qm.next() {
+            for cap in m.captures {
+                if cap.index as usize
+                    == q.capture_names().iter().position(|n| *n == "f").unwrap_or(99)
+                {
+                    let name = cap.node.utf8_text(scanned.as_bytes()).unwrap_or("");
+                    if comptime_fn_names.iter().any(|n| n == name)
+                        && !is_framework_name(name)
+                        && !found.iter().any(|f| f == name)
+                    {
+                        found.push(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+    found
+}
+
+fn nested_framework_macros(body: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut p = Parser::new();
+    p.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
+    let Some(tree) = p.parse(body, None) else {
+        return found;
+    };
+    let root = tree.root_node();
+    let Ok(q) = Query::new(
+        &tree_sitter_rust::LANGUAGE.into(),
+        "(macro_invocation macro: (identifier) @m) @i",
+    ) else {
+        return found;
+    };
+    let mut c = QueryCursor::new();
+    let mut qm = c.matches(&q, root, body.as_bytes());
+    while let Some(m) = qm.next() {
+        for cap in m.captures {
+            if cap.index as usize == q.capture_names().iter().position(|n| *n == "m").unwrap_or(99)
+            {
+                let name = cap.node.utf8_text(body.as_bytes()).unwrap_or("");
+                if (name == "source" || name == "async_source" || name == "call_scope")
+                    && !found.iter().any(|f| f == name)
+                {
+                    found.push(name.to_string());
+                }
+            }
+        }
+    }
+    found
 }
 
 fn find_kind_node<'a>(root: Node<'a>, src: &'a [u8], kind: &str) -> Option<Node<'a>> {
@@ -402,6 +504,7 @@ fn build_test_for_fn(
     policy: ParamPolicy,
     container_generics: &[String],
     check_self_type: bool,
+    comptime_fn_names: &[String],
 ) -> (String, Vec<String>, Option<String>) {
     let mut parser = Parser::new();
     parser.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
@@ -505,6 +608,11 @@ fn build_test_for_fn(
                     continue;
                 }
             }
+            ParamPolicy::AllowNonSelf => {
+                if fn_params.iter().any(|p| p != "self") {
+                    continue;
+                }
+            }
         }
 
         let body_node = match body_node {
@@ -528,12 +636,13 @@ fn build_test_for_fn(
         let expected_line = fn_line + macro_relative_row;
         let mut call_line = expected_line;
         let mut best_dist = usize::MAX;
+        let item_end_line = find_item_end_line(root_node, fn_line);
 
         for (i, line) in source_code
             .lines()
             .enumerate()
             .skip(fn_line.saturating_sub(1))
-            .take(macro_relative_row + 8)
+            .take(item_end_line.saturating_sub(fn_line).max(macro_relative_row) + 1)
         {
             if line.contains(&format!("{}!", macro_name)) {
                 let l = i + 1;
@@ -690,6 +799,28 @@ fn build_test_for_fn(
                      the {} call; move its definition before {} so it can be captured",
                     call_line, macro_label, t, macro_label, macro_label
                 ));
+            }
+        }
+
+        if !comptime_fn_names.is_empty() && !body_only.is_empty() {
+            let scanned = format!("{}\n{}", prefix_text, body_only);
+            for name in direct_comptime_calls(&scanned, comptime_fn_names) {
+                call_errors.push(format!(
+                    "comptime error (line {}): {} body directly calls \
+                     #[comptime] fn `{}`; direct calls are not computed at \
+                     compile time — invoke it with func!(\"{}\", ...) instead",
+                    call_line, macro_label, name, name
+                ));
+            }
+            for nested in nested_framework_macros(&body_only) {
+                if nested == "source" || nested == "async_source" || nested == "call_scope" {
+                    call_errors.push(format!(
+                        "comptime error (line {}): {}! is nested inside {}!; \
+                         nesting these macros is not supported — inline the \
+                         inner computation or extract it into its own {}!",
+                        call_line, nested, macro_name, nested
+                    ));
+                }
             }
         }
 
@@ -1949,6 +2080,18 @@ fn cached_comptime_fns(path: &Path) -> Vec<(String, String)> {
     ) else {
         return Vec::new();
     };
+    let Ok(impl_q) = Query::new(
+        &tree_sitter_rust::LANGUAGE.into(),
+        "(impl_item) @impl",
+    ) else {
+        return Vec::new();
+    };
+    let Ok(method_q) = Query::new(
+        &tree_sitter_rust::LANGUAGE.into(),
+        "(function_item name: (identifier) @n)",
+    ) else {
+        return Vec::new();
+    };
     let mut items = Vec::new();
     let mut qc = QueryCursor::new();
     let mut qm = qc.matches(&q, tree.root_node(), content.as_bytes());
@@ -1961,6 +2104,31 @@ fn cached_comptime_fns(path: &Path) -> Vec<(String, String)> {
             }
             if let Ok(item_text) = fn_node.utf8_text(content.as_bytes()) {
                 items.push((n.to_string(), item_text.to_string()));
+            }
+        }
+    }
+    let mut iqc = QueryCursor::new();
+    let mut iqm = iqc.matches(&impl_q, tree.root_node(), content.as_bytes());
+    while let Some(mm) = iqm.next() {
+        for cap in mm.captures {
+            let impl_node = cap.node;
+            if !has_comptime_attr(impl_node, content.as_bytes()) {
+                continue;
+            }
+            let mut mqc = QueryCursor::new();
+            let mut mqm = mqc.matches(&method_q, impl_node, content.as_bytes());
+            while let Some(mmm) = mqm.next() {
+                for mcap in mmm.captures {
+                    let Ok(n) = mcap.node.utf8_text(content.as_bytes()) else { continue };
+                    let Ok(m_text) = mcap.node.parent().unwrap().utf8_text(content.as_bytes())
+                    else {
+                        continue;
+                    };
+                    if items.iter().any(|(i, _)| i == n) {
+                        continue;
+                    }
+                    items.push((n.to_string(), m_text.to_string()));
+                }
             }
         }
     }
@@ -2330,7 +2498,7 @@ pub fn func(input: TokenStream) -> TokenStream {
         compute.push_str(line);
         compute.push('\n');
     }
-    compute.push_str("    }\n");
+    compute.push_str("    };\n");
     compute.push_str("    let __fcomptime_v = match __fcomptime_val {\n");
     compute.push_str("        Some(__fcomptime_v) => __fcomptime_v,\n");
     compute.push_str(&format!("        None => panic!({:?}),\n", panic_msg));
@@ -2346,10 +2514,22 @@ pub fn func(input: TokenStream) -> TokenStream {
                  \x20       __fcomptime_v\n    }}\n",
                 compute, label, is_str
             ));
-            code.push_str(&format!(
-                "    #[cfg(not(test))]\n    fcomptime::comptime_include_expr!({:?})\n",
-                label
-            ));
+            let fco_path = PathBuf::from(get_env_var("CARGO_MANIFEST_DIR"))
+                .join("comptime")
+                .join(label);
+            if fco_path.exists() {
+                code.push_str(&format!(
+                    "    #[cfg(not(test))]\n    fcomptime::comptime_include_expr!({:?})\n",
+                    label
+                ));
+            } else {
+                code.push_str(&format!(
+                    "    #[cfg(not(test))]\n    {{ compile_error!(concat!(\"comptime: func! output file 'comptime/\", {}, \
+                     \"' not found — run `cargo comptime run` first, or this fco file was never generated\")); \
+                     unreachable!() }}\n",
+                    format!("{:?}", label)
+                ));
+            }
         }
         None => {
             code.push_str(&compute);
@@ -2631,6 +2811,52 @@ pub fn info(_attr: TokenStream, item: TokenStream) -> TokenStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direct_comptime_calls_flags_known_fns_only() {
+        let scanned = "{\n    let r = direct_call_target(21);\n    let q = other_fn(1);\n    let s = non_comptime(2);\n    source! { output!(raw, r, \"x\"); }\n    let t = self.method();\n}";
+        let names = vec!["direct_call_target".to_string(), "other_fn".to_string()];
+        let found = direct_comptime_calls(scanned, &names);
+        assert!(found.contains(&"direct_call_target".to_string()));
+        assert!(found.contains(&"other_fn".to_string()));
+        assert!(!found.contains(&"non_comptime".to_string()));
+        assert_eq!(found.len(), 2);
+    }
+
+    #[test]
+    fn direct_comptime_calls_skips_framework_and_self_methods() {
+        let scanned = "{\n    source! { output!(raw, v, \"x\"); }\n    let a = func!(\"math\", 1);\n    let b = call!(\"data\", 0);\n    let c = self.helper();\n    let d = call_scope! { let _ = 1; };\n}";
+        let names = vec!["source".to_string(), "func".to_string(), "call".to_string(), "call_scope".to_string(), "helper".to_string()];
+        assert!(direct_comptime_calls(scanned, &names).is_empty());
+    }
+
+    #[test]
+    fn nested_framework_macros_detects_nesting() {
+        let flat = "{\n    let x = 5;\n    output!(raw, x, \"a\");\n    let y = func!(\"math\", 1);\n    call!(\"data\", 0);\n}";
+        assert!(nested_framework_macros(flat).is_empty());
+        let body_of_source = "{\n    call_scope! {\n        let _ = 1;\n    }\n}";
+        assert_eq!(
+            nested_framework_macros(body_of_source),
+            vec!["call_scope".to_string()]
+        );
+        let body_of_source2 = "{\n    source! {\n        output!(raw, x, \"a\");\n    }\n}";
+        assert_eq!(
+            nested_framework_macros(body_of_source2),
+            vec!["source".to_string()]
+        );
+    }
+
+    #[test]
+    fn find_item_end_line_spans_whole_function() {
+        let src = "pub fn long() -> i32 {\n    let a = 1;\n    let b = 2;\n    let c = 3;\n    let d = 4;\n    let e = 5;\n    let f = 6;\n    let g = 7;\n    let h = 8;\n    let i = 9;\n    let j = 10;\n    let k = 11;\n    let l = 12;\n    let m = 13;\n    a\n}\n\npub fn next() {}\n";
+        let mut p = Parser::new();
+        p.set_language(&tree_sitter_rust::LANGUAGE.into()).unwrap();
+        let tree = p.parse(src, None).unwrap();
+        let root = tree.root_node();
+        assert_eq!(find_item_end_line(root, 1), 16);
+        assert_eq!(find_item_end_line(root, 2), 16);
+        assert_eq!(find_item_end_line(root, 18), 18);
+    }
 
     #[test]
     fn placeholder_basic_and_double_digit() {
@@ -2929,3 +3155,4 @@ mod tests {
         assert!(!is_inside_framework_macro(name_node, text.as_bytes()));
     }
 }
+

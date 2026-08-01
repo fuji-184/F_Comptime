@@ -253,6 +253,7 @@ fn main() {
     assert_eq!(func!("area", 3, 4), 12);
     assert_eq!(func!("scale", 10), 20);
     assert_eq!(func!("scale", 2), 6);
+    assert_eq!(func!("calc", 21), 43);
 
     call_scope! {
         let tes3 = func!("math", 100);

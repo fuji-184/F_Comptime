@@ -56,3 +56,71 @@ impl LibGen {
 pub fn lib_impl_value() -> i32 {
     call!("lib_impl_data", 0)
 }
+
+#[comptime]
+pub fn long_gen() {
+    let mut acc = 0;
+    let mut i = 0;
+    while i < 100 {
+        acc += i;
+        i += 1;
+    }
+    let a = acc * 2;
+    let b = a + 1;
+    let c = b - 3;
+    let d = c % 7;
+    let e = d * 11;
+    let f = e + 5;
+    let g = f / 2;
+    let h = g * 3;
+    let j = h - 8;
+    let k = j + 4;
+    let m = k * 6;
+    let n = m - 2;
+    let o = n + 9;
+    let p = o * 13;
+    let q = p % 17;
+    let r = q * 5;
+    let s = r - 11;
+    let t = s + 2;
+    let u = t * 7;
+    let v = u / 3;
+    let w = v + 14;
+    let y = w * 2;
+    let z = y - 6;
+    let _ = &z;
+    source! {
+        output!(raw, z, "long_data");
+    }
+}
+
+pub fn long_result() -> i32 {
+    call!("long_data", 0)
+}
+
+pub trait Calc {
+    fn calc(x: i32) -> i32;
+}
+
+#[comptime]
+impl Calc for i32 {
+    fn calc(x: i32) -> i32 {
+        let v = x * 2 + 1;
+        source! {
+            output!(raw, v, "trait_calc");
+        }
+        v
+    }
+}
+
+#[comptime]
+pub fn trait_use() {
+    source! {
+        let got = func!("calc", 21);
+        output!(raw, got, "trait_use_data");
+    }
+}
+
+pub fn trait_use_result() -> i32 {
+    call!("trait_use_data", 0)
+}

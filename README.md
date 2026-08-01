@@ -32,7 +32,7 @@ While library like Crabtime solve a similar problem, F_Comptime solves the limit
 | **Dependency** | **Shared dependencies with the main crate** Reuse the same compilation cache of the main crate dependencies. | **Copy dependencies to new separated project** Duplicating compilation artifacts that consumes SSD space. |
 | **Shareable** | **Can share the comptime logic cross project/crate** So that it can be reused with different input. | **Fixed, can't share the compile time logic** Can only share the output. |
 | **Nested** | **Support nested comptime** Can use comptime output inside other comptime. | **Can't use the compile time evaluation output inside other Crabtime macro** |
-| **Impl And Trait Support** | **Impl and Trait support** Can use comptime inside impl blocks and trait default methods. Put `#[comptime]` on the impl block or trait declaration; methods must not have value parameters (only `self`) and the comptime code must not depend on `self`/`Self`/generic parameters of the impl. | **Limited Support** Can only be used in assosiated function |
+| **Impl And Trait Support** | **Impl and Trait support** Can use comptime inside impl blocks and trait default methods. Put `#[comptime]` on the impl block or trait declaration; methods must not have value parameters (only `self`) and the comptime code must not depend on `self`/`Self`/generic parameters of the impl. `#[comptime]` on a trait `impl` block (e.g. `#[comptime] impl Calc for i32`) is also supported, and those methods may have value parameters — call them with `func!("method_name", ...)`. | **Limited Support** Can only be used in assosiated function |
 | **Parameter Types And Values Info** | **Currently can do some of them** Support for info about normal fn parameter types, normal fn parameter value, generic fn types, and generic fn values. It doesn't support method inside impl block without potential duplicate names and Trait yet. | **Can't know types and values info of fn and generic parameter** |
 
 ## Crates
@@ -134,7 +134,7 @@ fn use_local() {
 ```
 
 Limitations:
-- the function must be annotated `#[comptime]` and located in the current crate (`src`, `tests`, `examples`, `benches`)
+- the function must be annotated `#[comptime]` and located in the current crate (`src`, `tests`, `examples`, `benches`) — trait-impl methods inside a `#[comptime] impl Trait for Type` block are also findable by name
 - only plain `name: type` parameters are supported (no `self`, no destructured patterns)
 - the number of arguments must match the number of parameters
 - the body must call `output!(raw|str, ...)` at least once inside `source!`
@@ -267,6 +267,56 @@ comptime_source! {
 
 ---
 
+## Compile-time Error Detection
+
+The `#[comptime]` attribute validates the code it processes and rejects these patterns with a clear `comptime error` (with the source line) instead of failing with a confusing downstream error:
+
+- **Direct calls to `#[comptime]` functions inside `source!` / `async_source!` / `call_scope!`** — a direct call runs the function's runtime body instead of its computed value. Use `func!("fn_name", ...)` so the call is evaluated at compile time:
+
+  ```rust
+  // ✗ error: source! body directly calls #[comptime] fn `direct_call_target`
+  #[comptime]
+  fn bad() {
+      let r = direct_call_target(21);
+      source! {
+          output!(raw, r, "bad_r");
+      }
+  }
+
+  // ✓ use func! instead
+  #[comptime]
+  fn good() {
+      let r = func!("direct_call_target", 21);
+      source! {
+          output!(raw, r, "good_r");
+      }
+  }
+  ```
+
+- **Nested `source!` / `async_source!` / `call_scope!` inside another one of those macros** — nesting is not supported (the inner block would not be labeled/captured). Inline the inner computation, or extract it into its own `source!` / `call_scope!` block. Note that `call!`, `func!`, and `output!` inside `source!` / `call_scope!` are fine.
+
+  ```rust
+  // ✗ error: source! is nested inside source!
+  #[comptime]
+  fn bad() {
+      source! {
+          source! {
+              output!(raw, 5, "inner");
+          }
+      }
+  }
+
+  // ✓ use separate top-level blocks
+  #[comptime]
+  fn good() {
+      source! {
+          output!(raw, 5, "inner");
+      }
+  }
+  ```
+
+---
+
 ## How to use the comptime in Trait
 
 Place `#[comptime]` above the trait declaration, then write the comptime macro normally. The `source!` body inside the default method is executed through the test harness like any other `#[comptime]` function.
@@ -291,6 +341,40 @@ trait Trait {
   }
 }
 ```
+
+### `#[comptime]` on a trait `impl` block
+
+`#[comptime]` also works on a trait implementation block. The methods do not have the usual `only self` restriction: value parameters are allowed, and the method is usable through `func!("method_name", ...)` like a free comptime function.
+
+```rust
+trait Calc {
+  fn calc(x: i32) -> i32;
+}
+
+#[comptime]
+impl Calc for i32 {
+  fn calc(x: i32) -> i32 {
+    let v = x * 2 + 1;
+    source! {
+      output!(raw, v, "trait_calc");
+    }
+    v
+  }
+}
+
+#[comptime]
+fn use_calc() {
+  source! {
+    let got = func!("calc", 21); // 43
+    output!(raw, got, "trait_use_data");
+  }
+}
+```
+
+Notes:
+- a method without value parameters also works like a plain method (its `source!` is executed by the test harness directly)
+- `&self` methods are still rejected if the comptime code depends on `self` (instance state cannot exist at compile time)
+- the method's `source!` output is captured through `func!`, so the method itself is not executed by the test harness
 
 ---
 
@@ -318,7 +402,7 @@ impl Calculator {
 
 Limitations of comptime inside impl blocks:
 
-- the method must not have value parameters (only `self` is allowed) — the generated test cannot capture them; extract into a free `#[comptime]` fn called with `func!` instead
+- the method must not have value parameters (only `self` is allowed) — the generated test cannot capture them; extract into a free `#[comptime]` fn called with `func!` instead. Exception: in a `#[comptime] impl Trait for Type` block, value parameters are allowed and the method is called through `func!` (see [How to use the comptime in Trait](#how-to-use-the-comptime-in-trait))
 - the `source!` body and the captured statements before it must not reference `self` (instance state can't exist at compile time) nor `Self` — use the concrete type name or module/associated data instead
 - the impl must not be generic, and the comptime code must not reference the impl's generic parameters (a standalone test cannot resolve `T`)
 - a bare `#[comptime]` on a method inside an impl block is not supported (the generated test module cannot be placed inside an impl block) — put the attribute on the enclosing `impl` block instead
@@ -632,11 +716,12 @@ cargo comptime run nested raw
 - `output!` (`raw` and `str`) and the name registry via `init_comptime!()`
 - `call!` variants: `str in` / `raw in` (let, let mut, const), `full` (with and without default item), `partial` (multi placeholder embedding), `token`, and bare
 - `call_scope!`
-- `func!`: single, multiple and zero parameters, literal/variable/expression arguments, branches, and nested inside another `source!`
+- `func!`: single, multiple and zero parameters, literal/variable/expression arguments, branches, nested inside another `source!`, and trait-impl methods (`#[comptime] impl Calc for i32` + `func!("calc", ...)`)
 - `#[comptime]` on `impl` blocks: plain and `&self` methods, private module helpers, async via `async_source!`, cross-target access (lib impl consumed by binaries)
 - `#[info]` / `get!`: parameters, generics, callers, and missing-info handling
 - runtime value capture (variables, loops), async via `async_source!`
 - cross-target access: lib outputs consumed by binaries
+- long functions with many statements (verifies the captured `source!` is mapped back to the correct source line)
 
 Run the full suite (regenerates the `comptime/` outputs, then builds and runs both binaries with assertions):
 
@@ -651,6 +736,7 @@ Run the full suite (regenerates the `comptime/` outputs, then builds and runs bo
 - `#[comptime]` inside impl blocks requires the attribute on the `impl` block itself (a bare `#[comptime]` on a method is rejected) — see [How to use the comptime in Impl](#how-to-use-the-comptime-in-impl)
 - `func!` only supports plain `name: type` parameters (no `self`, no destructured patterns) and sync `source!` bodies (`async_source!` inside `func!` is rejected)
 - Calling comptime output inside other comptime as non expression raw token/syntax requires `cargo comptime run nested raw`
+- Direct calls to `#[comptime]` functions inside `source!` / `async_source!` / `call_scope!` are rejected (use `func!`) and nesting `source!` / `async_source!` / `call_scope!` inside one another is rejected — see [Compile-time Error Detection](#compile-time-error-detection)
 
 ---
 
