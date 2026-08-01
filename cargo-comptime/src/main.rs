@@ -73,7 +73,41 @@ fn comptime_files_exist() -> bool {
             .unwrap_or(false)
 }
 
+fn extract_executables(stdout: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    for line_res in BufReader::new(stdout).lines() {
+        let Ok(line) = line_res else { continue };
+        if !line.starts_with('{') {
+            continue;
+        }
+        if let Some(start_idx) = line.find("\"executable\":\"") {
+            let rem = &line[start_idx + 14..];
+            if let Some(end_idx) = rem.find('"') {
+                let path_str = &rem[..end_idx];
+                if !path_str.is_empty() {
+                    out.push(path_str.replace("\\\\", "\\"));
+                }
+            }
+        }
+    }
+    out
+}
+
+fn run_all_test_binaries(bins: &[String]) {
+    for bin_path in bins {
+        let run_output = Command::new(bin_path)
+            .output()
+            .expect("Failed to execute test binary");
+        if !run_output.status.success() {
+            eprint!("{}", String::from_utf8_lossy(&run_output.stdout));
+            eprint!("{}", String::from_utf8_lossy(&run_output.stderr));
+            exit(1);
+        }
+    }
+}
+
 fn run_cargo_test() {
+    regenerate_compile_time_files();
     let output = Command::new("cargo")
         .args(&["test", "--features=comptime", "--no-run", "--message-format=json", "--profile=dev", "--", "--no-capture"])
         .stdout(Stdio::piped())
@@ -88,61 +122,66 @@ fn run_cargo_test() {
         exit(1);
     }
 
-    let mut test_binary = None;
-    let reader = BufReader::new(&output.stdout[..]);
-    for line_res in reader.lines() {
-        if let Ok(line) = line_res {
-            if line.starts_with('{') {
-                if let Some(start_idx) = line.find("\"executable\":\"") {
-                    let rem = &line[start_idx + 14..];
-                    if let Some(end_idx) = rem.find('"') {
-                        let path_str = &rem[..end_idx];
-                        if !path_str.is_empty() {
-                            test_binary = Some(path_str.replace("\\\\", "\\"));
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let test_binaries = extract_executables(&output.stdout);
 
-    let Some(bin_path) = test_binary else {
+    if test_binaries.is_empty() {
         let _ = Command::new("cargo")
             .args(&["test", "--features=comptime", "--no-run"])
             .status();
         exit(1);
-    };
-
-    let run_output = Command::new(&bin_path)
-        .output()
-        .expect("Failed to execute test binary");
-
-    if !run_output.status.success() {
-        eprint!("{}", String::from_utf8_lossy(&run_output.stdout));
-        eprint!("{}", String::from_utf8_lossy(&run_output.stderr));
-        exit(1);
     }
 
+    run_all_test_binaries(&test_binaries);
+
     save_test_timestamp();
+}
+
+fn cargo_metadata_text() -> Option<String> {
+    static CACHE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            let out = Command::new("cargo")
+                .args(["metadata", "--format-version=1", "--no-deps"])
+                .output()
+                .ok()?;
+            if !out.status.success() {
+                return None;
+            }
+            String::from_utf8(out.stdout).ok()
+        })
+        .clone()
 }
 
 fn has_comptime_ready_feature() -> bool {
     static CACHE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *CACHE.get_or_init(|| {
-        let Ok(out) = Command::new("cargo")
-            .args(["metadata", "--format-version=1", "--no-deps"])
-            .output()
-        else {
-            return false;
-        };
-        if !out.status.success() {
-            return false;
-        }
-        let Ok(text) = String::from_utf8(out.stdout) else {
+        let Some(text) = cargo_metadata_text() else {
             return false;
         };
         text.contains("\"comptime_ready\"")
     })
+}
+
+fn root_package_name() -> Option<String> {
+    let text = cargo_metadata_text()?;
+    let pkg_start = text.find("\"packages\":[")?;
+    let rest = &text[pkg_start..];
+    let name_pos = rest.find("\"name\":\"")? + 8;
+    let end = rest[name_pos..].find('"')?;
+    Some(rest[name_pos..name_pos + end].to_string())
+}
+
+fn regenerate_compile_time_files() {
+    if comptime_files_exist() {
+        return;
+    }
+    if let Some(name) = root_package_name() {
+        eprintln!(
+            "comptime: 'comptime/' is empty; forcing rebuild of '{}' to regenerate compile-time side effects (info files)",
+            name
+        );
+        let _ = Command::new("cargo").args(["clean", "-p", &name]).status();
+    }
 }
 
 fn phase2_cargo(extra: &[&str]) -> Command {
@@ -159,6 +198,7 @@ fn phase2_cargo(extra: &[&str]) -> Command {
 }
 
 fn run_cargo_test_nested_raw() {
+    regenerate_compile_time_files();
     let output = Command::new("cargo")
         .args(&["test", "--features=comptime", "--no-run", "--message-format=json", "--profile=dev", "--", "--no-capture"])
         .stdout(Stdio::piped())
@@ -174,40 +214,16 @@ fn run_cargo_test_nested_raw() {
         exit(1);
     }
 
-    let mut test_binary = None;
-    let reader = BufReader::new(&output.stdout[..]);
-    for line_res in reader.lines() {
-        if let Ok(line) = line_res {
-            if line.starts_with('{') {
-                if let Some(start_idx) = line.find("\"executable\":\"") {
-                    let rem = &line[start_idx + 14..];
-                    if let Some(end_idx) = rem.find('"') {
-                        let path_str = &rem[..end_idx];
-                        if !path_str.is_empty() {
-                            test_binary = Some(path_str.replace("\\\\", "\\"));
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let test_binaries = extract_executables(&output.stdout);
 
-    let Some(bin_path) = test_binary else {
+    if test_binaries.is_empty() {
         let _ = Command::new("cargo")
             .args(&["test", "--features=comptime", "--no-run"])
             .status();
         exit(1);
-    };
-
-    let run_output = Command::new(&bin_path)
-        .output()
-        .expect("Failed to execute test binary");
-
-    if !run_output.status.success() {
-        eprint!("{}", String::from_utf8_lossy(&run_output.stdout));
-        eprint!("{}", String::from_utf8_lossy(&run_output.stderr));
-        exit(1);
     }
+
+    run_all_test_binaries(&test_binaries);
     
     let output = phase2_cargo(&["--message-format=json", "--profile=dev", "--", "--no-capture"])
         .stdout(Stdio::piped())
@@ -221,38 +237,14 @@ fn run_cargo_test_nested_raw() {
         exit(1);
     }
 
-    let mut test_binary = None;
-    let reader = BufReader::new(&output.stdout[..]);
-    for line_res in reader.lines() {
-        if let Ok(line) = line_res {
-            if line.starts_with('{') {
-                if let Some(start_idx) = line.find("\"executable\":\"") {
-                    let rem = &line[start_idx + 14..];
-                    if let Some(end_idx) = rem.find('"') {
-                        let path_str = &rem[..end_idx];
-                        if !path_str.is_empty() {
-                            test_binary = Some(path_str.replace("\\\\", "\\"));
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let test_binaries = extract_executables(&output.stdout);
 
-    let Some(bin_path) = test_binary else {
+    if test_binaries.is_empty() {
         let _ = phase2_cargo(&["--no-run"]).status();
         exit(1);
-    };
-
-    let run_output = Command::new(&bin_path)
-        .output()
-        .expect("Failed to execute test binary");
-
-    if !run_output.status.success() {
-        eprint!("{}", String::from_utf8_lossy(&run_output.stdout));
-        eprint!("{}", String::from_utf8_lossy(&run_output.stderr));
-        exit(1);
     }
+
+    run_all_test_binaries(&test_binaries);
 
     save_test_timestamp();
 }
