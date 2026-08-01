@@ -113,29 +113,13 @@ fn run_cargo_test() {
         exit(1);
     };
 
-    loop {
-        let run_output = Command::new(&bin_path)
-            .output()
-            .expect("Failed to execute test binary");
+    let run_output = Command::new(&bin_path)
+        .output()
+        .expect("Failed to execute test binary");
 
-        if run_output.status.success() {
-            break;
-        }
-
-        let stderr_str = String::from_utf8_lossy(&run_output.stderr);
-        let stdout_str = String::from_utf8_lossy(&run_output.stdout);
-        
-        if stdout_str.contains("comptime error: output not found yet") 
-            || stderr_str.contains("comptime error: output not found yet")
-            || stdout_str.contains("ParseIntError")
-            || stderr_str.contains("ParseIntError")
-        {
-            std::thread::sleep(std::time::Duration::from_millis(1));
-            continue;
-        }
-
-        eprint!("{}", stdout_str);
-        eprint!("{}", stderr_str);
+    if !run_output.status.success() {
+        eprint!("{}", String::from_utf8_lossy(&run_output.stdout));
+        eprint!("{}", String::from_utf8_lossy(&run_output.stderr));
         exit(1);
     }
 
@@ -215,27 +199,14 @@ fn run_cargo_test_nested_raw() {
         exit(1);
     };
 
-    loop {
-        let run_output = Command::new(&bin_path)
-            .output()
-            .expect("Failed to execute test binary");
+    let run_output = Command::new(&bin_path)
+        .output()
+        .expect("Failed to execute test binary");
 
-        let stderr_str = String::from_utf8_lossy(&run_output.stderr);
-        let stdout_str = String::from_utf8_lossy(&run_output.stdout);
-
-        if stdout_str.contains("comptime error: raw output not found yet") 
-            || stderr_str.contains("comptime error: raw output not found yet")
-        {
-            std::thread::sleep(std::time::Duration::from_millis(1));
-            continue;
-        }
-
-        if !run_output.status.success() {
-            eprint!("{}", stdout_str);
-            eprint!("{}", stderr_str);
-            exit(1);
-        }
-        break;
+    if !run_output.status.success() {
+        eprint!("{}", String::from_utf8_lossy(&run_output.stdout));
+        eprint!("{}", String::from_utf8_lossy(&run_output.stderr));
+        exit(1);
     }
     
     let output = phase2_cargo(&["--message-format=json", "--profile=dev", "--", "--no-capture"])
@@ -273,31 +244,14 @@ fn run_cargo_test_nested_raw() {
         exit(1);
     };
 
-    loop {
-        let run_output = Command::new(&bin_path)
-            .output()
-            .expect("Failed to execute test binary");
+    let run_output = Command::new(&bin_path)
+        .output()
+        .expect("Failed to execute test binary");
 
-        let stderr_str = String::from_utf8_lossy(&run_output.stderr);
-        let stdout_str = String::from_utf8_lossy(&run_output.stdout);
-        
-        if stdout_str.contains("comptime error: output not found yet") 
-            || stderr_str.contains("comptime error: output not found yet")
-            || stdout_str.contains("comptime error: raw output not found yet") 
-            || stderr_str.contains("comptime error: raw output not found yet")
-            || stdout_str.contains("ParseIntError")
-            || stderr_str.contains("ParseIntError")
-        {
-            std::thread::sleep(std::time::Duration::from_millis(1));
-            continue;
-        }
-
-        if !run_output.status.success() {
-            eprint!("{}", stdout_str);
-            eprint!("{}", stderr_str);
-            exit(1);
-        }
-        break;
+    if !run_output.status.success() {
+        eprint!("{}", String::from_utf8_lossy(&run_output.stdout));
+        eprint!("{}", String::from_utf8_lossy(&run_output.stderr));
+        exit(1);
     }
 
     save_test_timestamp();

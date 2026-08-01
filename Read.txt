@@ -1,87 +1,27 @@
-kenapa funcnya ga dievaluasi di compile time pas dipanggil didalam call scope. perbaiki
+tes pakai kode ini
 
 use fcomptime::prelude::*;
-
-init_comptime!();
-
-fn non_comptime(i: i32) -> i32 {
-    i + 10 * 10
-}
-
-#[comptime]
+                                                  init_comptime!();                                 
+fn non_comptime(val: i32) -> i32 {                    let mut res = 0;                                  for i in 0..10 {
+        res += 10 * 10;                               }
+    res                                           }                                                                                                   #[comptime]
 fn with_param_caller_no_need_to_type_source(i: i32) {
     source! {
-        let res = i + 20 * 30;
-        output!(raw, i, "second");
+        let input = std::fs::read_to_string("./input.txt").unwrap().parse::<i32>().unwrap();
+        let res = i + 20 * 30 * input;                    output!(raw, res, "second");
     }
-}
-
+}                                                 
 #[comptime]
 fn main() {
 
     source! {
         let become_comptime = non_comptime(10) * 10;
-        output!(raw, become_comptime, "become_comptime");
-    }
+        output!(raw, become_comptime, "become_comptime");                                               }
 
-    call_scope! {
-        let become_comptime = call!("become_comptime");
-        println!("become_comptime: {}", become_comptime);
-
+    call_scope! {                                         let become_comptime = call!("become_comptime");
+        println!("become_comptime: {}", become_comptime);                                           
         let second = func!("with_param_caller_no_need_to_type_source", 20);
-        println!("second: {}", second);
-    }
-    
+        println!("second: {}", second);                                                             
+                                                      }
+
 }
-
-
-Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.12s
-
-#![feature(prelude_import)]
-extern crate std;
-#[prelude_import]
-use std::prelude::rust_2024::*;
-use fcomptime::prelude::*;
-fn non_comptime(i: i32) -> i32 {
-    i + 10 * 10
-}                                                 const _: (u64, u64) = (1785514985165354942, 11015831497268049505);                                  fn with_param_caller_no_need_to_type_source(i: i32) {}
-const _: (u64, u64) = (1785514985165354942, 11015831497268049505);
-fn main() {                                           #[allow(unexpected_cfgs)]                         {
-        let become_comptime = {                               #[allow(unreachable_code, unexpected_cfgs)]
-            {                                                     let _comptime_val = 1100;
-                _comptime_val                                 }                                             };
-        {
-            ::std::io::_print(format_args!("become_comptime: {0}\n", become_comptime));
-        };
-        let second = {
-            const _: (u64, u64) = (1785514985165354942, 11015831497268049505);
-            20
-        };                                                {
-            ::std::io::_print(format_args!("second: {0}\n", second));
-        };
-    }
-}
-[root@localhost tes1]#
-
-isi fungsi adalah 
-#[comptime]
-fn with_param_caller_no_need_to_type_source(i: i32) {
-    source! {
-        let res = i + 20 * 30;
-        output!(raw, i, "second");
-    }
-}
-
-dipanggil oakai param 20  let second = func!("with_param_caller_no_need_to_type_source", 20);
-        println!("second: {}", second);
-
-
-sejak kapan 20 + 20 * 30 = 20?
-
-Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.18s
-     Running `target/debug/tes1`
-become_comptime: 1100
-second: 20
-[root@localhost tes1]#
-
-itu salah, kode fungsinya ga dievaluasi, cuma nilai parameter langsung dioutput tanpa dihitung pakai kode fungsi, lawak, itu bug besar. func harusnya jalankan kode komputasinya lalu return hasilnya, bukan langsung return parameter gitu
